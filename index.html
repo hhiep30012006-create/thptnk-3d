@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#8e2a22">
+  <title>THPT Nguyễn Khuyến · Tham quan 3D</title>
+  <link rel="stylesheet" href="style.css">
+  <script type="importmap">
+    {"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"}}
+  </script>
+</head>
+<body>
+  <div id="stage" aria-label="Mô hình 3D trường THPT Nguyễn Khuyến"></div>
+
+  <header id="hud" hidden>
+    <div class="brand"><strong>THPT Nguyễn Khuyến</strong><span>Tham quan sân trường 3D</span></div>
+    <div class="student"><b id="studentName"></b><span id="studentClass"></span></div>
+    <div id="environmentStatus" class="environment-status" role="status" aria-live="polite">🕒 Đang cập nhật giờ và thời tiết…</div>
+    <button id="mapBtn" class="pill" type="button">🗺 Bản đồ <kbd>M</kbd></button>
+    <button id="chatToggle" class="pill" type="button" aria-expanded="false" aria-controls="chatPanel">💬 Chat <span id="onlineCount">0</span></button>
+    <button id="editBtn" class="pill" type="button">Đổi nhân vật</button>
+  </header>
+
+  <aside id="chatPanel" aria-label="Chat phòng tham quan" hidden>
+    <div class="chat-heading"><div><strong>Chat sân trường</strong><span id="roomStatus">Đang kết nối phòng…</span></div><button id="chatClose" type="button" aria-label="Đóng chat">×</button></div>
+    <div id="chatMessages" role="log" aria-live="polite" aria-relevant="additions"></div>
+    <form id="chatForm" autocomplete="off"><input id="chatInput" maxlength="240" placeholder="Nhắn cho mọi người…" aria-label="Tin nhắn"><button type="submit">Gửi</button></form>
+  </aside>
+
+  <canvas id="minimap" width="220" height="160" hidden aria-label="Bản đồ khuôn viên"></canvas>
+  <div id="loading" role="status">Đang tải mô hình trường… <span id="loadPct"></span></div>
+  <div id="toast" hidden></div>
+  <div id="npcSpeech" class="npc-speech" role="status" aria-live="polite" hidden></div>
+  <div id="npcLabels" aria-hidden="true"></div>
+
+  <footer id="help" hidden>
+    <span><kbd>W A S D</kbd> đi</span><span><kbd>Shift</kbd> chạy</span><span><kbd>Space</kbd> nhảy</span>
+    <span>Kéo chuột để xoay góc nhìn</span><span><kbd>M</kbd> bản đồ</span>
+    <span class="mobile-note">Điều khiển chạm: dùng các nút mũi tên</span>
+  </footer>
+  <nav id="touchControls" aria-label="Điều khiển cảm ứng" hidden>
+    <button data-key="KeyW" aria-label="Đi tới">▲</button>
+    <div><button data-key="KeyA" aria-label="Sang trái">◀</button><button data-key="KeyS" aria-label="Đi lùi">▼</button><button data-key="KeyD" aria-label="Sang phải">▶</button></div>
+    <div><button data-key="ShiftLeft" aria-label="Chạy">Chạy</button><button data-key="Space" aria-label="Nhảy">Nhảy</button></div>
+  </nav>
+
+  <section id="intro" class="overlay">
+    <form id="profileForm" class="card">
+      <p class="eyebrow">MÔ HÌNH THAM QUAN 3D</p>
+      <h1>THPT Nguyễn Khuyến</h1>
+      <p class="lead">Tạo nhân vật học sinh rồi dạo quanh khuôn viên trường.</p>
+      <div id="uniformPreview" class="uniform-preview" aria-live="polite">
+        <svg class="uniform-illustration" viewBox="0 0 180 190" role="img" aria-label="Minh họa đồng phục học sinh">
+          <rect class="preview-backdrop" x="1" y="1" width="178" height="188" rx="18" />
+          <circle class="preview-sun" cx="145" cy="34" r="15" />
+          <path class="preview-cloud" d="M20 44c0-6 5-10 11-9 3-8 15-7 17 2 7-1 11 8 6 12H26c-4 0-6-2-6-5Z" />
+          <path id="previewPants" d="M75 111h39l-2 49-14 1-5-30-6 30-14-1Z" />
+          <path id="previewShirt" d="M77 61h34l13 10-8 19-7-4v29H76V86l-7 4-8-19Z" />
+          <path class="preview-collar" d="m82 60 12 11 12-11-5-4H87Z" />
+          <path class="preview-shirt-seam" d="M94 72v40m-13-5h7" />
+          <path id="previewUntuckedHem" d="M76 113h33" />
+          <path id="previewArms" class="preview-arm" d="m69 72-9 18 7 4 10-17m45-5 9 18-7 4-10-17" />
+          <rect class="preview-neck" x="88" y="51" width="12" height="13" rx="4" />
+          <circle class="preview-face" cx="94" cy="39" r="17" />
+          <path class="preview-hair" d="M77 39c0-13 8-20 18-20 12 0 18 9 17 20-6-3-10-8-12-12-6 7-14 10-23 12Z" />
+          <g id="previewGirlHair" display="none">
+            <circle class="preview-hair" cx="111" cy="41" r="5" />
+            <path class="preview-hair" d="M111 43q13 8 7 23-2 5-7 2-5-4-2-11 2-7 2-14Z" />
+            <path class="preview-hair-tie" d="M108 45q4 3 7 0" />
+          </g>
+          <g id="previewBagCrossbody">
+            <path class="preview-bag-strap" d="m80 65 22 49" />
+            <rect class="preview-bag" x="101" y="105" width="21" height="24" rx="4" />
+            <path class="preview-bag-detail" d="M105 111h13" />
+          </g>
+          <g id="previewBagBackpack" hidden>
+            <path class="preview-bag preview-backpack-shape" d="M67 81q-5 0-5 6v21q0 5 5 5h8V84q-3-3-8-3Z" />
+            <path class="preview-backpack-strap" d="M80 68c-8 7-7 20-4 31m31-31c8 7 7 20 4 31" />
+          </g>
+          <g id="previewShoesStrap">
+            <path class="preview-shoe" d="M73 160h16v8H71q-4-4 2-8Zm27 0h16l3 8h-21q-3-4 2-8Z" />
+            <path class="preview-shoe-detail" d="m75 162 10 2m20-2 10 2m-38 2h12m17 0h12" />
+          </g>
+          <g id="previewShoesSlides" hidden>
+            <path class="preview-shoe" d="M73 160h16v8H71q-4-4 2-8Zm27 0h16l3 8h-21q-3-4 2-8Z" />
+            <path class="preview-shoe-detail" d="m74 163 13 1m15-1 13 1" />
+          </g>
+          <path class="preview-ground" d="M22 174h136" />
+        </svg>
+        <div class="uniform-preview-copy">
+          <strong id="uniformPreviewTitle">Đồng phục tiêu chuẩn</strong>
+          <span id="uniformPreviewCaption">Sơ mi trắng · sơ vin · quần đen · cặp chéo · dép quai hậu</span>
+        </div>
+      </div>
+      <div class="fields">
+        <label>Họ và tên<input id="name" maxlength="25" autocomplete="name" required placeholder="Ví dụ: Nguyễn Văn An"></label>
+        <div class="row">
+          <label>Lớp<input id="className" maxlength="8" required placeholder="Ví dụ: 12A1"></label>
+          <label>Năm bắt đầu niên khóa<input id="year" inputmode="numeric" maxlength="4" required placeholder="Ví dụ: 2023"></label>
+        </div>
+        <div class="row">
+          <label>Nhân vật<select id="gender"><option value="boy">Nam</option><option value="girl">Nữ</option></select></label>
+          <label>Áo sơ mi<select id="shirt"><option value="white" selected>Trắng</option><option value="blue">Xanh (sai quy định)</option></select></label>
+        </div>
+        <div class="row">
+          <label>Sơ vin<select id="tucked"><option value="yes" selected>Có</option><option value="no">Không</option></select></label>
+          <label>Quần<select id="pants"><option value="black" selected>Đen</option><option value="blue">Màu khác</option></select></label>
+        </div>
+        <div class="row">
+          <label>Cặp sách<select id="bag"><option value="crossbody" selected>Cặp chéo</option><option value="backpack">Ba lô</option></select></label>
+          <label>Dép<select id="footwear"><option value="strap" selected>Dép quai hậu</option><option value="slides">Dép lê</option></select></label>
+        </div>
+      </div>
+      <p class="uniform-rule">Đồng phục được duyệt: sơ mi trắng, sơ vin, quần đen, cặp chéo và dép quai hậu.</p>
+      <p id="formError" class="error" role="alert" aria-live="assertive" hidden></p>
+      <button id="startBtn" class="primary" type="submit">Vào trường</button>
+      <p class="privacy">Tên, lớp và vị trí nhân vật sẽ hiển thị với người cùng tham quan phòng này.</p>
+    </form>
+  </section>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>
