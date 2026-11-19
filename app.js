@@ -1,8 +1,11 @@
 import * as THREE from 'three';
 import { createCampusActivities, createCampusProp } from './campus-activities.js';
+import { setDeskPose } from './campus-classrooms.js';
+import { LightingController, LIGHTING_PRESETS, formatLocalClock } from './campus-lighting.js';
+import { createPresencePanel, PRESENCE_HEARTBEAT_MS, PRESENCE_IDLE_MS } from './campus-presence.js';
 import { createCampusSound } from './campus-audio.js';
 import { createFlowerBouquet } from './campus-flowers.js';
-import { addTeachersDayBanner } from './campus-banner.js';
+import { addTeachersDayBanner, teachersDayBackdropName } from './campus-banner.js';
 import { createCampusTraffic } from './campus-traffic.js';
 import { createCampusMap } from './campus-map.js';
 import { createMorningSunbeams, createMorningStructureShadows } from './campus-morning-light.js';
@@ -19,7 +22,10 @@ scene.fog = new THREE.FogExp2(0xddf0ff, .00245);
 
 const mobile = matchMedia('(pointer: coarse)').matches || (navigator.maxTouchPoints > 0 && matchMedia('(any-pointer: coarse)').matches);
 document.body.classList.toggle('mobile-campus', mobile);
-const maxPixelRatio = mobile ? 1.5 : 1.8;
+const maxPixelRatio = mobile ? 1.25 : 1.5;
+let renderScale = 1;
+let frameSampleTime = 0;
+let frameSampleCount = 0;
 const moveStick = new THREE.Vector2();
 const cameraForward = new THREE.Vector3();
 let nextShadowUpdate = 0;
@@ -27,8 +33,8 @@ const projectedLabel = new THREE.Vector3();
 const projectedChatBubble = new THREE.Vector3();
 let nextNameTagCheck = 0;
 const camera = new THREE.PerspectiveCamera(58, innerWidth / innerHeight, 0.1, 900);
-const renderer = new THREE.WebGLRenderer({ antialias: !mobile, powerPreference: 'high-performance', preserveDrawingBuffer: true });
-renderer.setPixelRatio(Math.min(devicePixelRatio || 1, maxPixelRatio));
+const renderer = new THREE.WebGLRenderer({ antialias: !mobile, powerPreference: 'high-performance' });
+updateRenderResolution();
 renderer.setSize(innerWidth, innerHeight);
 renderer.shadowMap.type = mobile ? THREE.PCFSoftShadowMap : THREE.PCFShadowMap;
 renderer.shadowMap.enabled = true;
@@ -47,11 +53,30 @@ if (!stage) {
 }
 stage.appendChild(renderer.domElement);
 
+function updateRenderResolution() {
+  const pixelBudget = 1920 * 1080;
+  const viewArea = Math.max(1, innerWidth * innerHeight);
+  const ratio = Math.min(devicePixelRatio || 1, maxPixelRatio, Math.sqrt(pixelBudget / viewArea));
+  renderer.setPixelRatio(ratio * renderScale);
+}
+
+function adjustRenderScale(delta) {
+  if (!started || document.hidden) return;
+  frameSampleTime += Math.min(delta, .5);
+  frameSampleCount++;
+  if (frameSampleTime < 1.5) return;
+  const average = frameSampleTime / frameSampleCount;
+  frameSampleTime = frameSampleCount = 0;
+  const previous = renderScale;
+  if (average > 1 / 32) renderScale = Math.max(.55, renderScale - .15);
+  else if (average < 1 / 54) renderScale = Math.min(1, renderScale + .05);
+  if (previous !== renderScale) updateRenderResolution();
+}
+
 const hemisphereLight = new THREE.HemisphereLight(0xf0f8ff, 0xefe6d8, 1.3);
 const ambientLight = new THREE.AmbientLight(0xffffff, .55);
 const sun = new THREE.DirectionalLight(0xfff9ed, 2.2);
 const duskFill = new THREE.DirectionalLight(0xffa458, 0);
-const moonLight = new THREE.DirectionalLight(0xc5d5ff, 0);
 sun.castShadow = true;
 sun.shadow.mapSize.setScalar(mobile ? 512 : 1024);
 Object.assign(sun.shadow.camera, { left: -23, right: 23, top: 22, bottom: -22, near: .5, far: 128 });
@@ -59,7 +84,7 @@ sun.shadow.camera.updateProjectionMatrix();
 sun.shadow.normalBias = .04;
 sun.shadow.bias = -.0003;
 sun.shadow.radius = 2.2;
-scene.add(hemisphereLight, ambientLight, sun, sun.target, duskFill, moonLight);
+scene.add(hemisphereLight, ambientLight, sun, sun.target, duskFill);
 const treeShadowLimit = mobile ? 8 : 15;
 const treeShadowAnchors = [];
 const depthOnly = new THREE.MeshBasicMaterial({ colorWrite: false, depthWrite: false });
@@ -220,15 +245,12 @@ for (let i = 0; i < cloudLimit; i++) {
   cloudClusters.push({ group, materials, index: i });
 }
 
-// Dawn uses a fixed art preset. Live weather still informs the other scenes.
+// Campus weather is descriptive; the player's device clock selects lighting.
 const SCHOOL_WEATHER_URL = 'https://api.open-meteo.com/v1/forecast?latitude=20.69795&longitude=106.46866&current=temperature_2m,relative_humidity_2m,apparent_temperature,is_day,precipitation,rain,showers,weather_code,cloud_cover,wind_speed_10m&timezone=Asia%2FHo_Chi_Minh';
-const SCHOOL_TIME_ZONE = 'Asia/Ho_Chi_Minh';
 const environmentStatus = $('#environmentStatus');
+const mobileEnvironmentClock = $('#mobileEnvironmentClock');
 const environment = { cloudCover: 0, weatherCode: 0, temperature: null, rain: 0, updatedAt: null, unavailable: false };
 
-const timeFormatter = new Intl.DateTimeFormat('vi-VN', {
-  timeZone: SCHOOL_TIME_ZONE, hour: '2-digit', minute: '2-digit', hourCycle: 'h23'
-});
 function weatherLabel(code) {
   if ([0].includes(code)) return 'Trời quang';
   if ([1].includes(code)) return 'Ít mây';
@@ -242,39 +264,18 @@ function weatherLabel(code) {
   return 'Thời tiết hiện tại';
 }
 
-const scenesOfDay = [
-  { label: 'Buổi sáng', icon: '☀️', status: '07:30 · Nắng sớm · 24°C',
-    direction: [-.39, .766, .52], sky: 0xddf0ff, sun: 0xfff9ed, fog: 0xddf0ff, fogDensity: .00245,
-    ambient: 0xf0f8ff, ground: 0xefe6d8, power: 2.2, duskPower: 0, fill: 1.3, exposure: 1.3,
-    morning: 1, night: 0, sunset: 0 },
-  { label: 'Hoàng hôn', icon: '🌅', direction: [-.73, .19, -.65], sky: 0xf2aa79, sun: 0xffa458,
-    fog: 0xf2aa79, fogDensity: .0021, ambient: 0xffdec3, ground: 0xa56b72,
-    power: .89, duskPower: 1.22, fill: 1.16, exposure: 1.13, morning: 0, night: 0, sunset: 1 },
-  { label: 'Buổi tối', icon: '🌙', direction: [-.72, .37, -.55], sky: 0x081329, sun: 0x9ab8ff,
-    fog: 0x081329, fogDensity: .0021, ambient: 0xb3c9ff, ground: 0x4f596f,
-    power: 0, duskPower: 0, fill: .67, exposure: 1.05, morning: 0, night: 1, sunset: 0 }
-].map(scene => ({
-  ...scene,
-  direction: new THREE.Vector3(...scene.direction).normalize(),
-  sky: new THREE.Color(scene.sky), sun: new THREE.Color(scene.sun), fog: new THREE.Color(scene.fog),
-  ambient: new THREE.Color(scene.ambient), ground: new THREE.Color(scene.ground)
+const dayColors = ['sky', 'horizon', 'zenith', 'sun', 'ambient', 'ground', 'fog'];
+const dayValues = ['power', 'duskPower', 'fill', 'exposure', 'morning', 'night', 'sunset', 'fogDensity', 'lamps', 'clouds'];
+const scenesOfDay = LIGHTING_PRESETS.map(preset => ({ ...preset,
+  direction: new THREE.Vector3(...preset.direction).normalize(),
+  ...Object.fromEntries(dayColors.map(field => [field, new THREE.Color(preset[field])]))
 }));
-let dayMode = 0;
-try {
-  const saved = Number(localStorage.getItem('nk-day-mode'));
-  if (Number.isInteger(saved) && scenesOfDay[saved]) dayMode = saved;
-} catch {}
-const currentDay = {
-  ...scenesOfDay[dayMode], direction: new THREE.Vector3(), sky: new THREE.Color(),
-  sun: new THREE.Color(), ambient: new THREE.Color(), ground: new THREE.Color(), fog: new THREE.Color()
-};
-const moonDirection = new THREE.Vector3(.32, .48, -.81).normalize();
+const currentDay = { direction: new THREE.Vector3(), ...Object.fromEntries(dayColors.map(field => [field, new THREE.Color()])) };
+const moonDirection = scenesOfDay[2].direction;
 const cloudTint = new THREE.Color();
 const warmCloud = new THREE.Color(0xffbe94);
 const dayCloud = new THREE.Color(0xfff8eb);
 const nightCloud = new THREE.Color(0x50617c);
-let dayBlend = null;
-const dayButtons = document.querySelectorAll('[data-day-cycle]');
 
 function makeStars() {
   const count = mobile ? 230 : 410;
@@ -304,9 +305,6 @@ function makeStars() {
 }
 const nightStars = makeStars();
 
-const dayColors = ['sky', 'sun', 'ambient', 'ground', 'fog'];
-const dayValues = ['power', 'duskPower', 'fill', 'exposure', 'morning', 'night', 'sunset', 'fogDensity'];
-
 function sampleDay(from, to, t) {
   currentDay.direction.lerpVectors(from.direction, to.direction, t).normalize();
   for (const field of dayColors) currentDay[field].lerpColors(from[field], to[field], t);
@@ -314,11 +312,12 @@ function sampleDay(from, to, t) {
 }
 
 function applyDayLighting() {
-  const { direction, sky, morning, night, sunset } = currentDay;
-  const clouds = THREE.MathUtils.clamp(environment.cloudCover / 100, 0, 1) * (1 - morning);
+  const { direction, sky, morning, night, sunset, clouds } = currentDay;
   const skyAlpha = 1 - night;
   skyDome.material.uniforms.dayOpacity.value = skyAlpha;
-  skyDome.material.uniforms.morningMix.value = morning;
+  skyDome.material.uniforms.morningMix.value = 1;
+  skyDome.material.uniforms.morningHorizon.value.copy(currentDay.horizon);
+  skyDome.material.uniforms.morningZenith.value.copy(currentDay.zenith);
   skyDome.material.uniforms.sunPosition.value.copy(direction).multiplyScalar(500);
   skyDome.material.uniforms.turbidity.value = 4.8 + sunset * 4;
   skyDome.visible = skyAlpha > .005;
@@ -329,6 +328,7 @@ function applyDayLighting() {
   duskFill.position.copy(direction).multiplyScalar(120);
   duskFill.color.copy(currentDay.sun);
   duskFill.intensity = currentDay.duskPower * (1 - clouds * .32);
+  duskFill.visible = duskFill.intensity > 0;
   sunDisk.position.copy(direction).multiplyScalar(500);
   sunCore.position.copy(sunDisk.position);
   sunDisk.visible = sunCore.visible = skyAlpha > .005;
@@ -342,8 +342,6 @@ function applyDayLighting() {
     morningBeams.material.opacity = morning * .12;
   }
   if (morningStructureShadows) morningStructureShadows.visible = morning > .005;
-  moonLight.position.copy(moonDirection).multiplyScalar(120);
-  moonLight.intensity = night * .52;
   moonDisk.position.copy(moonDirection).multiplyScalar(500);
   moonCore.position.copy(moonDisk.position);
   moonDisk.visible = moonCore.visible = night > .005;
@@ -359,12 +357,6 @@ function applyDayLighting() {
   scene.background.copy(sky);
   scene.fog.color.copy(currentDay.fog);
   scene.fog.density = currentDay.fogDensity;
-  if (night > .995) {
-    for (const mesh of [crownShadows, trunkShadows, characterShadows]) {
-      mesh.visible = false;
-      mesh.count = 0;
-    }
-  }
   const coverage = Math.max(0, (clouds - .04) / .96);
   const visibleCount = Math.round(coverage * cloudClusters.length);
   cloudTint.copy(dayCloud).lerp(warmCloud, sunset).lerp(nightCloud, night);
@@ -375,23 +367,20 @@ function applyDayLighting() {
       material.opacity = (.24 + coverage * .44) * (1 - night * .65);
     }
   }
-  for (const material of glowingLampMaterials) material.emissiveIntensity = night * .9;
+  for (const material of glowingLampMaterials) material.emissiveIntensity = currentDay.lamps * .9;
   updateNightLights();
 }
 
-function syncEnvironmentStatus() {
-  if (!environmentStatus) return;
-  const presetStatus = scenesOfDay[dayMode].status;
-  if (presetStatus) {
-    if (environmentStatus.textContent !== presetStatus) environmentStatus.textContent = presetStatus;
-    environmentStatus.title = 'Chế độ ánh sáng buổi sáng';
-    return;
-  }
+function syncEnvironmentStatus(now = new Date()) {
   const weather = environment.temperature === null
-    ? (environment.unavailable ? 'chưa có dữ liệu thời tiết' : 'đang tải thời tiết')
+    ? ''
     : weatherLabel(environment.weatherCode) + ' · ' + Math.round(environment.temperature) + '°C';
-  environmentStatus.textContent = '🕒 ' + timeFormatter.format(new Date()) + ' · ' + weather;
-  environmentStatus.title = 'Giờ địa phương Hải Phòng · Thời tiết hiện tại';
+  const clockText = formatLocalClock(now);
+  const label = LIGHTING_PRESETS[lighting.phase].label;
+  const hudText = '🕒 ' + clockText + (weather ? ' · ' + weather : ' · ' + label);
+  if (environmentStatus.textContent !== hudText) environmentStatus.textContent = hudText;
+  if (mobileEnvironmentClock.textContent !== clockText) mobileEnvironmentClock.textContent = clockText;
+  environmentStatus.title = 'Giờ thiết bị · ' + label + (weather ? ' · Thời tiết Hải Phòng' : '');
 }
 
 function updateEnvironmentLighting() {
@@ -399,38 +388,22 @@ function updateEnvironmentLighting() {
   syncEnvironmentStatus();
 }
 
-function cycleDayMode() {
-  dayMode = (dayMode + 1) % scenesOfDay.length;
-  dayBlend = {
-    at: performance.now(),
-    from: { ...currentDay, direction: currentDay.direction.clone(), sky: currentDay.sky.clone(),
-      sun: currentDay.sun.clone(), ambient: currentDay.ambient.clone(), ground: currentDay.ground.clone(), fog: currentDay.fog.clone() }
-  };
-  try { localStorage.setItem('nk-day-mode', String(dayMode)); } catch {}
-  syncDayButtons();
-  syncEnvironmentStatus();
-  showToast(scenesOfDay[dayMode].label);
-}
-
-function syncDayButtons() {
-  for (const button of dayButtons) {
-    const { label, icon } = scenesOfDay[dayMode];
-    button.querySelector('[aria-hidden]').textContent = icon;
-    button.setAttribute('aria-label', 'Ánh sáng: ' + label + '. Bấm để đổi chế độ');
-    button.title = 'Ánh sáng: ' + label + ' · Bấm để đổi chế độ';
-  }
-}
-
-function animateDayLighting() {
-  if (!dayBlend) return;
-  const t = THREE.MathUtils.clamp((performance.now() - dayBlend.at) / 2500, 0, 1);
-  sampleDay(dayBlend.from, scenesOfDay[dayMode], t * t * (3 - 2 * t));
+const lighting = new LightingController((from, to, weight) => {
+  sampleDay(scenesOfDay[from], scenesOfDay[to], weight);
   applyDayLighting();
-  if (t === 1) dayBlend = null;
+  renderer.shadowMap.needsUpdate = true;
+});
+
+function syncLightingClock() {
+  const now = new Date();
+  const monotonic = performance.now();
+  lighting.tick(now, monotonic);
+  lighting.frame(monotonic);
+  syncEnvironmentStatus(now);
 }
 
 function updateNightLights() {
-  const night = currentDay.night;
+  const intensity = currentDay.lamps;
   const shouldReplace = performance.now() >= nextNightLightUpdate;
   if (shouldReplace) {
     nextNightLightUpdate = performance.now() + 250;
@@ -440,7 +413,7 @@ function updateNightLights() {
   for (let i = 0; i < campusLampLights.length; i++) {
     const light = campusLampLights[i];
     const anchor = lampAnchors[i];
-    if (!anchor || i >= budget || night < .002) { light.visible = false; light.intensity = 0; continue; }
+    if (!anchor || i >= budget || intensity < .002) { light.visible = false; light.intensity = 0; continue; }
     if (light.userData.anchor !== anchor) {
       light.userData.anchor = anchor;
       light.color.set(anchor.color);
@@ -448,13 +421,9 @@ function updateNightLights() {
       light.distance = anchor.range;
     }
     light.visible = true;
-    light.intensity = anchor.intensity * night;
+    light.intensity = anchor.intensity * intensity;
   }
 }
-
-sampleDay(scenesOfDay[dayMode], scenesOfDay[dayMode], 1);
-syncDayButtons();
-for (const button of dayButtons) button.addEventListener('click', cycleDayMode);
 
 async function refreshCurrentWeather() {
   if (!navigator.onLine) return;
@@ -478,9 +447,11 @@ async function refreshCurrentWeather() {
   }
 }
 
-updateEnvironmentLighting();
+syncLightingClock();
 refreshCurrentWeather();
-setInterval(updateEnvironmentLighting, 15000);
+setInterval(syncLightingClock, 1000);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) syncLightingClock(); });
+window.addEventListener('pageshow', syncLightingClock);
 setInterval(refreshCurrentWeather, 10 * 60 * 1000);
 window.addEventListener('online', refreshCurrentWeather);
 
@@ -492,13 +463,40 @@ const ground = new THREE.Mesh(
 ground.rotation.x = -Math.PI / 2;
 ground.position.set(0, -0.48, -28);
 scene.add(ground);
-const walkableMeshes = [ground];
-const CAMPUS_MODEL_URL = './assets/Nguyenkhuyen1999.draco.glb';
+const groundHalfWidth = ground.geometry.parameters.width / 2;
+const groundHalfDepth = ground.geometry.parameters.height / 2;
+const walkableGrid = new Map();
+const CAMPUS_MODEL_URL = './assets/Nguyenkhuyen1989.glb';
+
+// The detailed November campus export keeps the same layout but was exported
+// with descriptive Blender names.  Gameplay was written against the compact
+// export's names, so give its interaction anchors stable aliases at load time.
+// This deliberately changes only Object3D names, never geometry/material data.
+function applyDetailedCampusCompatibility(campus) {
+  const alias = (legacyName, detailedName) => {
+    if (campus.getObjectByName(legacyName)) return;
+    // GLTFLoader sanitizes Blender names before adding them to the scene.
+    const object = campus.getObjectByName(THREE.PropertyBinding.sanitizeNodeName(detailedName));
+    if (!object) return;
+    object.userData.detailedCampusName = object.name;
+    object.name = legacyName;
+  };
+  alias('MatNuocHo', 'Mặt nước • translucent shallow fountain');
+  alias('Incense_Urn', 'Lư hương 01 • burner');
+  alias('Statue02_Incense_Urn', 'Lư hương 02 • burner');
+  alias('Statue_Head', 'Tượng Nguyễn Khuyến 01 • head');
+  alias('Statue02_Statue_Head', 'Tượng Nguyễn Khuyến 02 • head');
+  alias('Khu_C1_2Tang_CanhCuaDi_0_4', 'C1 • Assembly court classrooms • P101 • Door');
+  alias('MatBangTinGiua006', 'Noticeboard_Gate');
+}
 const groundRaycaster = new THREE.Raycaster();
 const walkSurfaceNormalMatrix = new THREE.Matrix3();
+const walkSurfaceNormal = new THREE.Vector3();
+const groundOnly = [ground];
 const MAX_STEP_UP = 1.15;
 const MAX_STEP_DOWN = 2.4;
-const groundProbeCache = { x: NaN, z: NaN, feetY: NaN, surfaceY: null };
+const WALK_STEP_HEIGHT = .42;
+const groundProbeCache = { x: NaN, z: NaN, feetY: NaN, maxRise: NaN, surfaceY: null };
 
 // Campus walkable outline (Blender XY maps to GLTF XZ), extended around the
 // sports field and volleyball court present in the GLB.
@@ -514,7 +512,7 @@ const boundary = [
   [-58,-108],[-59,-145],[-50,-152],[-28,-159],[40,-159],[42,-154],[42,-118]
 ];
 
-const walker = { x: 0, y: 0, z: 4, velocityY: 0, onGround: true, yaw: 0, speed: 5.2, running: false };
+const walker = { x: 7.5, y: 0.35, z: -14, velocityY: 0, onGround: true, yaw: 0, speed: 5.2, running: false };
 const keys = new Set();
 let avatar = null;
 let campusLoaded = false;
@@ -524,8 +522,12 @@ let stepDistance = 0;
 let nextAmbience = 0;
 const PLAYER_RADIUS = 0.28;
 const PLAYER_HEIGHT = 1.78;
+const CAMPUS_COLLISION_TOP = 12;
 const COLLISION_CELL_SIZE = 6;
 const obstacleGrid = new Map();
+const wallGrid = new Map();
+const playerCollisionBox = new THREE.Box3();
+const classroomFurniture = [];
 let fountainEffectGroup = null;
 let fountainDroplets = [];
 let fountainRipples = [];
@@ -550,7 +552,8 @@ let roomConnectionGeneration = 0;
 let roomId = '';
 let roomJoined = false;
 let roomSendClock = 0;
-let roomHeartbeatClock = 0;
+let lastPresenceInput = performance.now();
+let sentPresenceStatus;
 let lastRoomPosition = null;
 let roomSpawnOffsetApplied = false;
 const remotePlayers = new Map();
@@ -566,6 +569,9 @@ const activities = createCampusActivities({
   setFace,
   getRoom: () => ({ id: roomJoined ? roomId : '', players: remotePlayers }),
   floor: findWalkSurface,
+  collides: collidesAt,
+  playerBox: setPlayerCollisionBox,
+  positionCamera: () => positionOutdoorView(2.7),
   outdoorOpen: point => pointInBoundary(point.x, point.z) && !collidesAt(point.x, point.z, point.y),
   notice: showToast,
   pickupClearance,
@@ -599,6 +605,11 @@ const campusMap = createCampusMap({
     positionOutdoorView();
   },
   notice: showToast
+});
+const presence = createPresencePanel({
+  dialog: $('#presenceDialog'), buttons: [$('#presenceToggle'), $('#mobilePresenceToggle')],
+  badges: document.querySelectorAll('[data-presence-count]'), resetInput: resetPlayerInput,
+  canOpen: () => started && !campusMap.blocking && !activities.blocksMovement && !document.querySelector('dialog[open]')
 });
 const traffic = createCampusTraffic({
   scene, walker, sound,
@@ -652,7 +663,6 @@ function addObstacleToGrid(box) {
 }
 
 const lowPlacementObstacles = [];
-const fenceTileSize = .40;
 function isPerimeterFence(object) {
   for (let parent = object; parent; parent = parent.parent) {
     if (/^(?:Batch_Fence_(?:02_Cong_Truong|WORLD)|Fence_FrontWest_|TruRao_|TuongChanRao_|TruCong(?:Trai|Phai)|TuongBienTen)/i.test(parent.name)) return true;
@@ -660,58 +670,89 @@ function isPerimeterFence(object) {
   return false;
 }
 
-function rasterFence(object, rows) {
-  const { position } = object.geometry.attributes;
+function indexWallTriangles(object, maxCollisionY = CAMPUS_COLLISION_TOP) {
+  const { index, attributes: { position } } = object.geometry;
   if (!position) return;
-  const index = object.geometry.index;
-  const points = new Float32Array(position.count * 2);
-  const vertex = new THREE.Vector3();
-  for (let i = 0; i < position.count; i++) {
-    vertex.fromBufferAttribute(position, i).applyMatrix4(object.matrixWorld);
-    points[i * 2] = vertex.x;
-    points[i * 2 + 1] = vertex.z;
-  }
+  const vertices = Array.from({ length: position.count }, (_, i) =>
+    new THREE.Vector3().fromBufferAttribute(position, i).applyMatrix4(object.matrixWorld)
+  );
+  const edge = new THREE.Vector3();
+  const normal = new THREE.Vector3();
   const length = index?.count ?? position.count;
   for (let i = 0; i + 2 < length; i += 3) {
-    const a = (index ? index.getX(i) : i) * 2;
-    const b = (index ? index.getX(i + 1) : i + 1) * 2;
-    const c = (index ? index.getX(i + 2) : i + 2) * 2;
-    const left = Math.floor((Math.min(points[a], points[b], points[c]) - .015) / fenceTileSize);
-    const right = Math.floor((Math.max(points[a], points[b], points[c]) + .015) / fenceTileSize);
-    const top = Math.floor((Math.min(points[a + 1], points[b + 1], points[c + 1]) - .015) / fenceTileSize);
-    const bottom = Math.floor((Math.max(points[a + 1], points[b + 1], points[c + 1]) + .015) / fenceTileSize);
-    for (let z = top; z <= bottom; z++) {
-      let row = rows.get(z);
-      if (!row) rows.set(z, row = new Set());
-      for (let x = left; x <= right; x++) row.add(x);
+    const a = vertices[index ? index.getX(i) : i];
+    const b = vertices[index ? index.getX(i + 1) : i + 1];
+    const c = vertices[index ? index.getX(i + 2) : i + 2];
+    if (Math.max(a.y, b.y, c.y) < .05 || Math.min(a.y, b.y, c.y) > maxCollisionY) continue;
+    normal.subVectors(b, a).cross(edge.subVectors(c, a));
+    const normalLengthSquared = normal.lengthSq();
+    // Walkable slopes, floors and flat undersides are handled by the ground probe.
+    if (normalLengthSquared === 0 || normal.y ** 2 >= .62 ** 2 * normalLengthSquared) continue;
+    const box = new THREE.Box3().setFromPoints([a, b, c]);
+    const wall = { box, triangle: new THREE.Triangle(a, b, c) };
+    const left = Math.floor((box.min.x - PLAYER_RADIUS) / COLLISION_CELL_SIZE);
+    const right = Math.floor((box.max.x + PLAYER_RADIUS) / COLLISION_CELL_SIZE);
+    const top = Math.floor((box.min.z - PLAYER_RADIUS) / COLLISION_CELL_SIZE);
+    const bottom = Math.floor((box.max.z + PLAYER_RADIUS) / COLLISION_CELL_SIZE);
+    for (let x = left; x <= right; x++) {
+      for (let z = top; z <= bottom; z++) {
+        const key = collisionCellKey(x, z);
+        if (!wallGrid.has(key)) wallGrid.set(key, []);
+        wallGrid.get(key).push(wall);
+      }
     }
   }
 }
 
-function addHardFences(rows) {
-  for (const [z, tiles] of rows) {
-    const row = [...tiles].sort((a, b) => a - b);
-    let start = row[0];
-    for (let i = 0; i < row.length; i++) {
-      if (row[i + 1] === row[i] + 1) continue;
-      addObstacleToGrid(new THREE.Box3(
-        new THREE.Vector3(start * fenceTileSize, -128, z * fenceTileSize),
-        new THREE.Vector3((row[i] + 1) * fenceTileSize, 128, (z + 1) * fenceTileSize)
-      ));
-      start = row[i + 1];
+function indexWalkableMesh(mesh, box) {
+  const minX = Math.floor(box.min.x / COLLISION_CELL_SIZE);
+  const maxX = Math.floor(box.max.x / COLLISION_CELL_SIZE);
+  const minZ = Math.floor(box.min.z / COLLISION_CELL_SIZE);
+  const maxZ = Math.floor(box.max.z / COLLISION_CELL_SIZE);
+  for (let x = minX; x <= maxX; x++) {
+    for (let z = minZ; z <= maxZ; z++) {
+      const key = collisionCellKey(x, z);
+      if (!walkableGrid.has(key)) walkableGrid.set(key, [ground]);
+      walkableGrid.get(key).push(mesh);
     }
   }
+}
+
+function blocksWalking(box, size) {
+  // Low curbs and raised strips are step-over surfaces rather than walls.
+  return size.y >= .92 && box.max.y >= .05 && box.min.y <= CAMPUS_COLLISION_TOP;
+}
+
+function isCampusFloorMesh(object) {
+  // GLTFLoader replaces spaces with underscores in Object3D names.
+  const floorName = /^(?:Stairs|CauThang)|Gallery[\s_]+terracotta/i;
+  const isGalleryOrStair = floorName.test(object.name) || floorName.test(object.parent?.name ?? '');
+  const material = object.material?.name ?? '';
+  if (isGalleryOrStair) return !/railing/i.test(material);
+  return /classroom terrazzo|^SanGach$/i.test(material);
 }
 
 function buildCampusColliders(campus) {
-  const fenceRows = new Map();
+  const instanceTransform = new THREE.Matrix4();
+  const size = new THREE.Vector3();
   campus.updateMatrixWorld(true);
-  campus.traverse(obj => {
-    if (!obj.isMesh) return;
-    const box = new THREE.Box3().setFromObject(obj);
-    if (box.isEmpty()) return;
+  campus.traverseVisible(obj => {
+    if (!obj.isMesh || obj.userData.collision || obj.userData.classroomMovingDoor) return;
+    // Leaf cards have transparent pixels which their collision triangles cannot represent.
+    if (/cutout[\s_]+(?:canopy|leaves)/i.test(obj.name)) return;
+    if (!obj.geometry.boundingBox) obj.geometry.computeBoundingBox();
+    const localBox = obj.geometry.boundingBox;
+    if (localBox.isEmpty()) return;
+    if (obj.isInstancedMesh) {
+      for (let i = 0; i < obj.count; i++) {
+        obj.getMatrixAt(i, instanceTransform);
+        const box = localBox.clone().applyMatrix4(instanceTransform.premultiply(obj.matrixWorld));
+        if (blocksWalking(box, box.getSize(size))) addObstacleToGrid(box);
+      }
+      return;
+    }
+    const box = localBox.clone().applyMatrix4(obj.matrixWorld);
     if (/Bon(?:Gach|Vuong|Cay|Hoa)|VienCay|^ChauHo|^Bench_/i.test(obj.name)) lowPlacementObstacles.push(box);
-    if (isPerimeterFence(obj)) { rasterFence(obj, fenceRows); return; }
     // This repeated low fence is the pitch border. Its section AABBs seal the
     // narrow side path, so keep this one fence non-blocking while retaining
     // collisions for the rest of the campus.
@@ -719,36 +760,38 @@ function buildCampusColliders(campus) {
       && box.min.x >= -30 && box.max.x <= 41
       && box.min.z >= -159 && box.max.z <= -113;
     if (isPitchFence) return;
-    const size = box.getSize(new THREE.Vector3());
+    box.getSize(size);
+    const perimeter = isPerimeterFence(obj);
     const horizontalSpan = Math.max(size.x, size.z);
-    if (!obj.userData.collision && horizontalSpan > 0.35 && size.y <= Math.max(0.65, horizontalSpan * 0.3)) {
-      walkableMeshes.push(obj);
+    // A single mesh can hold several floors and be taller than its footprint.
+    if (!perimeter && (isCampusFloorMesh(obj) || (horizontalSpan > .35 && size.y <= Math.max(.65, horizontalSpan * .3)))) {
+      indexWalkableMesh(obj, box);
     }
-    if (obj.userData.collision) return;
-    // Ground, paving, road paint and roofs are not upright obstacles.
-    // Low curbs and raised strips are step-over surfaces rather than walls.
-    if (size.y < 0.92 || box.max.y < 0.05 || box.min.y > PLAYER_HEIGHT + 5) return;
-    const horizontalCells = Math.ceil(size.x / COLLISION_CELL_SIZE) * Math.ceil(size.z / COLLISION_CELL_SIZE);
-    if (horizontalCells > 180) return;
-    addObstacleToGrid(box);
+    if (perimeter || blocksWalking(box, size)) {
+      const treeBaseOnly = /trunk[\s_]+and[\s_]+branches/i.test(obj.name);
+      const top = treeBaseOnly ? Math.min(CAMPUS_COLLISION_TOP, box.min.y + 2.5) : CAMPUS_COLLISION_TOP;
+      indexWallTriangles(obj, top);
+    }
   });
-  addHardFences(fenceRows);
+}
+
+function setPlayerCollisionBox(box, x, feetY, z) {
+  box.min.set(x - PLAYER_RADIUS, feetY + .08, z - PLAYER_RADIUS);
+  box.max.set(x + PLAYER_RADIUS, feetY + PLAYER_HEIGHT, z + PLAYER_RADIUS);
 }
 
 function collidesAt(x, z, feetY = walker.y) {
   const cellX = Math.floor(x / COLLISION_CELL_SIZE);
   const cellZ = Math.floor(z / COLLISION_CELL_SIZE);
-  const nearby = obstacleGrid.get(collisionCellKey(cellX, cellZ));
-  if (!nearby) return false;
-  const minY = feetY + 0.08;
-  const maxY = feetY + PLAYER_HEIGHT;
-  for (const box of nearby) {
-    if (maxY <= box.min.y || minY >= box.max.y) continue;
-    if (x + PLAYER_RADIUS <= box.min.x || x - PLAYER_RADIUS >= box.max.x) continue;
-    if (z + PLAYER_RADIUS <= box.min.z || z - PLAYER_RADIUS >= box.max.z) continue;
-    return true;
-  }
-  return false;
+  const key = collisionCellKey(cellX, cellZ);
+  setPlayerCollisionBox(playerCollisionBox, x, feetY, z);
+  if (activities.classrooms.collidesDoor(playerCollisionBox)) return true;
+  const boxes = obstacleGrid.get(key);
+  if (boxes?.some(box => playerCollisionBox.intersectsBox(box))) return true;
+  const walls = wallGrid.get(key);
+  return walls?.some(({ box, triangle }) =>
+    playerCollisionBox.intersectsBox(box) && playerCollisionBox.intersectsTriangle(triangle)
+  ) ?? false;
 }
 
 function pickupClearance(point) {
@@ -765,18 +808,54 @@ function pickupClearance(point) {
   const maxX = Math.floor((point.x + searchRadius) / COLLISION_CELL_SIZE);
   const minZ = Math.floor((point.z - searchRadius) / COLLISION_CELL_SIZE);
   const maxZ = Math.floor((point.z + searchRadius) / COLLISION_CELL_SIZE);
+  const clearanceBox = new THREE.Box3(
+    new THREE.Vector3(point.x - searchRadius, point.y + .06, point.z - searchRadius),
+    new THREE.Vector3(point.x + searchRadius, point.y + 1.4, point.z + searchRadius)
+  );
+  const waist = new THREE.Vector3(point.x, point.y + .65, point.z);
+  const closest = new THREE.Vector3();
   for (let x = minX; x <= maxX; x++) {
     for (let z = minZ; z <= maxZ; z++) {
-      const boxes = obstacleGrid.get(collisionCellKey(x, z));
+      const key = collisionCellKey(x, z);
+      const boxes = obstacleGrid.get(key);
       if (boxes) for (const box of boxes) consider(box);
+      const walls = wallGrid.get(key);
+      if (walls) for (const { box, triangle } of walls) {
+        if (!clearanceBox.intersectsBox(box) || !clearanceBox.intersectsTriangle(triangle)) continue;
+        triangle.closestPointToPoint(waist, closest);
+        nearest = Math.min(nearest, Math.hypot(point.x - closest.x, point.z - closest.z));
+      }
     }
   }
   return nearest;
 }
 
-function canMoveTo(x, z) {
-  if (activities.insideClassroom) return activities.canMove(x, z);
-  return pointInBoundary(x, z) && !collidesAt(x, z);
+function tryMoveTo(x, z) {
+  if (activities.insideClassroom) {
+    if (!activities.canMove(x, z)) return false;
+  } else {
+    // Let the actual campus geometry control access. The old polygon is still
+    // useful for finding spawn points, but no longer blocks ordinary walking.
+    if (Math.abs(x - ground.position.x) > groundHalfWidth || Math.abs(z - ground.position.z) > groundHalfDepth) return false;
+    const feetY = walker.y;
+    const surface = walker.onGround ? findWalkSurface(x, z, feetY, WALK_STEP_HEIGHT) : null;
+    const nextFeet = surface !== null && surface > feetY ? surface : feetY;
+    if (collidesAt(x, z, nextFeet)) {
+      if (!walker.onGround) return false;
+      // The capsule touches the riser before its centre reaches the tread.
+      // Probe in the direction of motion to allow that first bit of approach.
+      const dx = x - walker.x, dz = z - walker.z;
+      const span = Math.max(Math.abs(dx), Math.abs(dz));
+      if (!span) return false;
+      const ahead = PLAYER_RADIUS / span;
+      const edge = findWalkSurface(x + dx * ahead, z + dz * ahead, feetY, WALK_STEP_HEIGHT);
+      if (edge === null || edge <= nextFeet || collidesAt(x, z, edge)) return false;
+    }
+    walker.y = nextFeet;
+  }
+  walker.x = x;
+  walker.z = z;
+  return true;
 }
 
 function moveWithCollision(dx, dz) {
@@ -787,14 +866,10 @@ function moveWithCollision(dx, dz) {
   for (let i = 0; i < steps; i++) {
     const nx = walker.x + stepX;
     const nz = walker.z + stepZ;
-    if (canMoveTo(nx, nz)) {
-      walker.x = nx;
-      walker.z = nz;
-      continue;
-    }
+    if (tryMoveTo(nx, nz)) continue;
     // Try each axis separately so the student can slide along a wall.
-    if (canMoveTo(nx, walker.z)) walker.x = nx;
-    if (canMoveTo(walker.x, nz)) walker.z = nz;
+    if (stepX) tryMoveTo(nx, walker.z);
+    if (stepZ) tryMoveTo(walker.x, nz);
   }
 }
 
@@ -887,7 +962,9 @@ function batchCampusMeshes(campus) {
   const palettes = new Map();
   const position = new THREE.Vector3();
   campus.traverse(object => {
-    if (!object.isMesh || !object.visible || object.userData.collision || object.isSkinnedMesh || object.isInstancedMesh
+    if (!object.isMesh || !object.visible || object.userData.collision || object.userData.classroomMovingDoor
+      || object.userData.classroomSurface || object.isSkinnedMesh || object.isInstancedMesh
+      || /^Batch_Fence_/.test(object.name)
       || Array.isArray(object.material) || object.material.transparent || /^BongDen(?:Phai|Trai)_/.test(object.name)) return;
     for (let parent = object; parent !== campus; parent = parent.parent) {
       if (/^Bench_|^MatBangTinGiua|Incense_Urn/.test(parent.name)) return;
@@ -950,17 +1027,134 @@ function batchCampusMeshes(campus) {
   }
 }
 
+const renderSectorSize = 24;
+
+function renderSectorAt(point) {
+  return collisionCellKey(Math.floor(point.x / renderSectorSize), Math.floor(point.z / renderSectorSize));
+}
+
+function splitFenceMesh(mesh) {
+  const { geometry } = mesh;
+  const { index, attributes: { position } } = geometry;
+  if (!index || index.count < 9000 || Array.isArray(mesh.material)) return;
+  const sectors = new Map();
+  const vertices = Array.from({ length: position.count }, (_, i) =>
+    new THREE.Vector3().fromBufferAttribute(position, i)
+  );
+  const center = new THREE.Vector3();
+  for (let i = 0; i + 2 < index.count; i += 3) {
+    const a = index.getX(i), b = index.getX(i + 1), c = index.getX(i + 2);
+    center.copy(vertices[a]).add(vertices[b]).add(vertices[c]).multiplyScalar(1 / 3).applyMatrix4(mesh.matrixWorld);
+    const key = renderSectorAt(center);
+    if (!sectors.has(key)) sectors.set(key, { indices: [], bounds: new THREE.Box3() });
+    const { indices, bounds } = sectors.get(key);
+    indices.push(a, b, c);
+    bounds.expandByPoint(vertices[a]).expandByPoint(vertices[b]).expandByPoint(vertices[c]);
+  }
+  if (sectors.size < 2) return;
+  for (const { indices, bounds } of sectors.values()) {
+    const part = mesh.clone(false);
+    part.name = mesh.name + '_sector';
+    part.geometry = new THREE.BufferGeometry();
+    for (const [name, attribute] of Object.entries(geometry.attributes)) part.geometry.setAttribute(name, attribute);
+    part.geometry.setIndex(indices);
+    part.geometry.boundingBox = bounds;
+    part.geometry.boundingSphere = bounds.getBoundingSphere(new THREE.Sphere());
+    mesh.parent.add(part);
+  }
+  mesh.visible = false;
+}
+
+function splitCampusInstances(mesh, classroomDetail) {
+  const sectors = new Map();
+  const center = new THREE.Vector3();
+  for (let i = 0; i < mesh.count; i++) {
+    const matrix = new THREE.Matrix4();
+    mesh.getMatrixAt(i, matrix);
+    center.setFromMatrixPosition(matrix).applyMatrix4(mesh.matrixWorld);
+    const key = renderSectorAt(center);
+    if (!sectors.has(key)) sectors.set(key, []);
+    sectors.get(key).push({ matrix, index: i });
+  }
+  if (!classroomDetail && sectors.size < 2) return;
+  const color = new THREE.Color();
+  for (const items of sectors.values()) {
+    const part = new THREE.InstancedMesh(mesh.geometry, mesh.material, items.length);
+    part.name = mesh.name + '_sector';
+    part.position.copy(mesh.position);
+    part.quaternion.copy(mesh.quaternion);
+    part.scale.copy(mesh.scale);
+    part.castShadow = mesh.castShadow;
+    part.receiveShadow = mesh.receiveShadow;
+    part.renderOrder = mesh.renderOrder;
+    part.layers.mask = mesh.layers.mask;
+    for (const [i, { matrix, index }] of items.entries()) {
+      part.setMatrixAt(i, matrix);
+      if (mesh.instanceColor) {
+        mesh.getColorAt(index, color);
+        part.setColorAt(i, color);
+      }
+    }
+    part.computeBoundingSphere();
+    if (classroomDetail) {
+      const bounds = part.boundingSphere.clone().applyMatrix4(mesh.matrixWorld);
+      classroomFurniture.push({ part, bounds });
+    }
+    mesh.parent.add(part);
+  }
+  mesh.visible = false;
+}
+
+function optimiseCampusVisibility(campus) {
+  const largeFences = [];
+  const instances = [];
+  campus.updateMatrixWorld(true);
+  campus.traverse(mesh => {
+    if (!mesh.isMesh || !mesh.visible) return;
+    if (mesh.isInstancedMesh) {
+      const classroomDetail = /Student[_ ]+(?:chair|desk)|Teacher[_ ]+desk|Blackboard/i.test(mesh.name);
+      if (classroomDetail || mesh.count >= 12) instances.push({ mesh, classroomDetail });
+    } else if (/^Batch_Fence_/.test(mesh.name)) {
+      largeFences.push(mesh);
+    }
+  });
+  for (const mesh of largeFences) splitFenceMesh(mesh);
+  for (const { mesh, classroomDetail } of instances) splitCampusInstances(mesh, classroomDetail);
+}
+
+function updateFurnitureVisibility() {
+  for (const { part, bounds } of classroomFurniture) {
+    part.visible = bounds.distanceToPoint(camera.position) < 38;
+  }
+}
+
 function createCampusLampLights(campus) {
   campus.updateMatrixWorld(true);
   const fixtureGeometry = new THREE.SphereGeometry(.095, 6, 4);
   const fixture = new THREE.MeshStandardMaterial({ color: 0xffdfa9, emissive: 0xffb95e, emissiveIntensity: 0 });
   const lampCovers = [];
+  const windowMaterials = new Map();
   const addLamp = (position, color, range, intensity, marker) => {
     lampAnchors.push({ position, color, range, intensity });
     if (marker) lampCovers.push(position);
   };
   campus.traverse(object => {
-    if (!object.isMesh || !/^BongDen(?:Phai|Trai)_\d+$/.test(object.name)) return;
+    if (!object.isMesh) return;
+    if (/Window[\s_]+glazing/i.test(object.name + ' ' + (object.parent?.name ?? ''))) {
+      const glowWindow = material => {
+        if (!material?.emissive) return material;
+        if (!windowMaterials.has(material)) {
+          const glow = material.clone();
+          glow.emissive.set(0xffd096);
+          glow.emissiveIntensity = 0;
+          glowingLampMaterials.push(glow);
+          windowMaterials.set(material, glow);
+        }
+        return windowMaterials.get(material);
+      };
+      object.material = Array.isArray(object.material) ? object.material.map(glowWindow) : glowWindow(object.material);
+    }
+    if (!/^BongDen(?:Phai|Trai)_\d+$/.test(object.name)) return;
     const box = new THREE.Box3().setFromObject(object);
     const point = box.getCenter(new THREE.Vector3());
     addLamp(point, 0xffd59a, 25, 45, false);
@@ -991,6 +1185,25 @@ function createCampusLampLights(campus) {
   if (stageBox) {
     const point = stageBox.getCenter(new THREE.Vector3());
     for (const offset of [-4, 4]) addLamp(new THREE.Vector3(point.x + offset, stageBox.max.y + 4, point.z + 1), 0xffba7a, 20, 42, true);
+  } else {
+    const backdrop = anchorBox(teachersDayBackdropName);
+    if (backdrop) {
+      for (const fraction of [.25, .75]) {
+        const z = THREE.MathUtils.lerp(backdrop.min.z, backdrop.max.z, fraction);
+        addLamp(new THREE.Vector3(backdrop.max.x + 2, backdrop.max.y - .6, z), 0xffba7a, 20, 42, false);
+      }
+    }
+  }
+  const gallery = campus.getObjectByName(THREE.PropertyBinding.sanitizeNodeName('C1 • Assembly court classrooms • Gallery terracotta'));
+  if (gallery?.isMesh) {
+    gallery.geometry.computeBoundingBox();
+    const { min, max } = gallery.geometry.boundingBox;
+    for (const level of [0, max.y]) {
+      for (const fraction of [.2, .5, .8]) {
+        const point = new THREE.Vector3(THREE.MathUtils.lerp(min.x, max.x, fraction), level + 2.6, (min.z + max.z) / 2);
+        addLamp(gallery.localToWorld(point), 0xffd0a0, 15, 24, false);
+      }
+    }
   }
   for (const name of ['Statue_Head', 'Statue02_Statue_Head']) {
     const box = anchorBox(name);
@@ -1029,7 +1242,7 @@ function collectTreeShadowAnchors(campus) {
 }
 
 function updateCampusShadows(time) {
-  if (!started || currentDay.night > .995 || time < nextShadowUpdate) return;
+  if (!started || time < nextShadowUpdate) return;
   nextShadowUpdate = time + .18;
   const target = sun.target.position.set(walker.x, walker.y, walker.z);
   sun.position.copy(target).addScaledVector(sunDirection, 69);
@@ -1040,7 +1253,7 @@ function updateCampusShadows(time) {
   const distance = tree => (tree.x - walker.x) ** 2 + (tree.z - walker.z) ** 2;
   treeShadowAnchors.sort((a, b) => distance(a) - distance(b));
   let count = 0;
-  if (outside && currentDay.morning + currentDay.sunset > .02) {
+  if (outside) {
     for (const tree of treeShadowAnchors) {
       if (count >= treeShadowLimit || distance(tree) > 45 ** 2) break;
       const { x, y, z, height, broadCourtyardTree } = tree;
@@ -1230,19 +1443,22 @@ function animateFountain(time) {
   }
 }
 
-function findWalkSurface(x, z, feetY) {
-  if (Math.abs(x - groundProbeCache.x) < 0.025 && Math.abs(z - groundProbeCache.z) < 0.025
+function findWalkSurface(x, z, feetY, maxRise = MAX_STEP_UP) {
+  if (maxRise === groundProbeCache.maxRise && Math.abs(x - groundProbeCache.x) < 0.025 && Math.abs(z - groundProbeCache.z) < 0.025
       && Math.abs(feetY - groundProbeCache.feetY) < 0.025) return groundProbeCache.surfaceY;
-  const originY = feetY + MAX_STEP_UP + 0.08;
-  groundRaycaster.set(new THREE.Vector3(x, originY, z), new THREE.Vector3(0, -1, 0));
+  groundProbeCache.maxRise = maxRise;
+  const originY = feetY + maxRise + 0.08;
+  groundRaycaster.ray.origin.set(x, originY, z);
+  groundRaycaster.ray.direction.set(0, -1, 0);
   groundRaycaster.near = 0;
-  groundRaycaster.far = MAX_STEP_UP + MAX_STEP_DOWN + 0.08;
-  const hits = groundRaycaster.intersectObjects(walkableMeshes, false);
+  groundRaycaster.far = maxRise + MAX_STEP_DOWN + 0.08;
+  const key = collisionCellKey(Math.floor(x / COLLISION_CELL_SIZE), Math.floor(z / COLLISION_CELL_SIZE));
+  const hits = groundRaycaster.intersectObjects(walkableGrid.get(key) ?? groundOnly, false);
   for (const hit of hits) {
-    if (hit.point.y > feetY + MAX_STEP_UP || hit.point.y < feetY - MAX_STEP_DOWN) continue;
+    if (hit.point.y > feetY + maxRise || hit.point.y < feetY - MAX_STEP_DOWN) continue;
     if (!hit.face) continue;
     walkSurfaceNormalMatrix.getNormalMatrix(hit.object.matrixWorld);
-    const normalY = hit.face.normal.clone().applyMatrix3(walkSurfaceNormalMatrix).normalize().y;
+    const normalY = walkSurfaceNormal.copy(hit.face.normal).applyMatrix3(walkSurfaceNormalMatrix).normalize().y;
     if (normalY > 0.62) {
       groundProbeCache.x = x;
       groundProbeCache.z = z;
@@ -1695,16 +1911,20 @@ let gateHorse;
 const gateHorseName = 'Bùi Quốc Hiệp 06';
 
 function createGateHorse(campus) {
-  const pillar = campus.getObjectByName('TruCongPhai');
-  if (!pillar) return;
-  const box = new THREE.Box3().setFromObject(pillar);
-  const x = THREE.MathUtils.lerp(box.min.x, box.max.x, .48);
+  const oldPillar = campus.getObjectByName('TruCongPhai');
+  const gate = oldPillar ?? campus.getObjectByName('02_Cong_Truong_Chi_Tiet');
+  const wallMesh = oldPillar ?? campus.getObjectByName('Batch_Fence_02_Cong_Truong_Chi_Tiet_GachThe');
+  if (!gate || !wallMesh) return;
+  const box = new THREE.Box3().setFromObject(gate);
+  const x = oldPillar ? THREE.MathUtils.lerp(box.min.x, box.max.x, .48) : box.max.x + .1;
   const ray = new THREE.Raycaster(new THREE.Vector3(x, box.min.y + 1.3, box.max.z + 2), new THREE.Vector3(0, 0, -1));
-  const contact = ray.intersectObject(pillar, true)[0];
-  if (!contact) return;
+  ray.far = 8;
+  const contact = ray.intersectObject(wallMesh, true)[0];
   const root = new THREE.Group();
   root.name = gateHorseName;
-  const wall = contact.point.z;
+  // Some detailed Blender exports merge the gate wall into the booth mesh;
+  // retain a safe fallback instead of silently dropping the easter egg.
+  const wall = contact?.point.z ?? box.max.z;
   root.position.set(x, findWalkSurface(x, wall + .42, box.min.y) ?? box.min.y, wall + .016);
 
   const coat = makeMat(0x55301f);
@@ -1800,6 +2020,7 @@ function createGateHorse(campus) {
   $('#npcLabels').append(tag);
   gateHorse = { root, head, tail, eyes, tag, anchor: new THREE.Vector3() };
   activities.registerGateHorse(root);
+  campusMap.placeNpc(gateHorseName, root.position);
 }
 
 function projectNpcTag(tag, anchor, distanceCheck, distanceSquared, suppressed = false) {
@@ -1847,7 +2068,7 @@ function createCampusNpcs() {
   activities.registerNpc(teacher, 'teacher');
   const flowerTeachers = [
     ['Cô Hường', -11, -71.4, { dress: 0xf78342, hair: 'low-bun', glasses: true, floor: 1.1, book: 0x629391 }],
-    ['Cô Quyên', 6, -65.2, { dress: 0xf3bc4c, hair: 'loose', book: 0x815845 }],
+    ['Cô Quyên', 6, -65.2, { dress: 0xf3bc4c, hair: 'loose', floor: 1.33, book: 0x815845 }],
     ['Cô Nhung', 38.5, -22.5, { dress: 0xe987a8, hair: 'half-up', floor: 1.0, book: 0x665582 }]
   ];
   for (const [name, x, z, style] of flowerTeachers) {
@@ -2140,7 +2361,7 @@ function roomPost(path,payload,signal) {
     method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload),signal
   }).then(async response=>{
     const result=await response.json().catch(()=>({}));
-    if(!response.ok) throw new Error(result.error||`Lỗi máy chủ (${response.status})`);
+    if(!response.ok) throw Object.assign(new Error(result.error||`Lỗi máy chủ (${response.status})`), { status: response.status });
     return result;
   });
 }
@@ -2263,12 +2484,14 @@ function setRemoteProp(root, kind) {
 
 function addRemotePlayer(data) {
   if(!data?.id||data.id===roomId) return null;
+  presence.setPlayer(data.id, data.profile, data.presence);
   const existing=remotePlayers.get(data.id);
   const incomingPosition=data.position||{};
   if(existing){
     existing.profile=data.profile||existing.profile;
     existing.target.set(Number(incomingPosition.x)||0,Number(incomingPosition.y)||0,Number(incomingPosition.z)||0);
     existing.targetYaw=Number(incomingPosition.yaw)||0;
+    existing.deskPose=Number(incomingPosition.deskPose)||0;
     setRemoteProp(existing.root, incomingPosition.prop);
     existing.lastSeen=performance.now();
     existing.nameTag.textContent=avatarTag(existing.profile);
@@ -2287,12 +2510,15 @@ function addRemotePlayer(data) {
   nameTag.textContent=avatarTag(remoteProfile);
   $('#npcLabels').append(nameTag);
   const remote={id:data.id,profile:remoteProfile,root,nameTag,target,targetYaw:Number(incomingPosition.yaw)||0,lastSeen:performance.now(),renderY:target.y,jumpStartedAt:0,jumpBaseY:target.y,chatBubble:null,chatUntil:0};
+  remote.deskPose=Number(incomingPosition.deskPose)||0;
+  remote.renderDeskPose=remote.deskPose;
   remotePlayers.set(data.id,remote);
   updateRoomCount();
   return remote;
 }
 
 function removeRemotePlayer(id) {
+  presence.remove(id);
   const remote=remotePlayers.get(id);
   if(!remote) return;
   scene.remove(remote.root);
@@ -2303,7 +2529,9 @@ function removeRemotePlayer(id) {
 }
 
 function handleRoomEvent(type,data) {
-  if(type==='classroom-board'){
+  if(type==='player-presence'){
+    presence.setStatus(data.id, data.status);
+  }else if(type==='classroom-board'){
     activities.drawBoard(data.text || '');
   }else if(type==='player-joined'){
     if(addRemotePlayer(data)){
@@ -2315,6 +2543,7 @@ function handleRoomEvent(type,data) {
     if(remote){
       remote.target.set(Number(data.position.x)||0,Number(data.position.y)||0,Number(data.position.z)||0);
       remote.targetYaw=Number(data.position.yaw)||0;
+      remote.deskPose=Number(data.position.deskPose)||0;
       setRemoteProp(remote.root, data.position.prop);
       remote.lastSeen=performance.now();
     }
@@ -2353,6 +2582,7 @@ async function pollRoomEvents(generation) {
       for(const item of result.events||[]) handleRoomEvent(item.event,item.data);
     }catch(error){
       if(controller.signal.aborted||generation!==roomConnectionGeneration) return;
+      if(error.status===404){ void connectRoom(); return; }
       setRoomStatus('Mạng chập chờn · đang kết nối lại…');
       await new Promise(resolve=>setTimeout(resolve,400));
     }finally{
@@ -2368,6 +2598,8 @@ async function connectRoom() {
   roomPollController=null;
   roomJoined=false;
   roomId='';
+  sentPresenceStatus=undefined;
+  presence.reset();
   setRoomStatus('Đang nối máy chủ…');
   try{
     const response=await fetch(`${ROOM_API_ORIGIN}/api/connect?room=nguyen-khuyen`,{cache:'no-store'});
@@ -2385,15 +2617,19 @@ async function connectRoom() {
     remotePlayers.clear();
     for(const player of data.players||[]) addRemotePlayer(player);
     appendRoomMessages(data.messages||[]);
+    const joiningId = roomId;
+    const status = localPresenceStatus();
     await roomPost('/api/join',{
       id:roomId,
+      status,
       profile:{name:profile.name,className:profile.className,year:profile.year,role:profile.role,gender:profile.gender,outfit:profile.outfit},
       position:{x:walker.x,y:walker.y,z:walker.z,yaw:walker.yaw,prop:avatar?.userData.flowerBouquet?.name || avatar?.userData.campusProp?.name || ''}
     });
-    if(generation!==roomConnectionGeneration){roomPost('/api/leave',{id:roomId}).catch(()=>{});return;}
+    if(generation!==roomConnectionGeneration){roomPost('/api/leave',{id:joiningId}).catch(()=>{});return;}
     roomJoined=true;
+    sentPresenceStatus=status;
+    presence.ready(roomId, profile, status);
     roomSendClock=0;
-    roomHeartbeatClock=0;
     lastRoomPosition={x:walker.x,y:walker.y,z:walker.z,yaw:walker.yaw};
     updateRoomCount();
     setRoomStatus(`Đang tham quan · ${remotePlayers.size+1} người`);
@@ -2401,6 +2637,7 @@ async function connectRoom() {
     pollRoomEvents(generation);
   }catch(error){
     if(generation!==roomConnectionGeneration) return;
+    presence.reset('offline');
     setRoomStatus('Chưa nối được máy chủ · chạy node server.js');
     console.warn('Không vào được phòng nhiều người:',error);
   }
@@ -2409,22 +2646,50 @@ async function connectRoom() {
 function updateRoomNetwork(dt) {
   if(!started||!roomJoined||!roomId) return;
   roomSendClock+=dt;
-  roomHeartbeatClock+=dt;
-  const current={x:walker.x,y:walker.y,z:walker.z,yaw:walker.yaw,prop:avatar?.userData.flowerBouquet?.name || avatar?.userData.campusProp?.name || ''};
+  const current={x:walker.x,y:walker.y,z:walker.z,yaw:walker.yaw,deskPose:activities.classrooms.pose,prop:avatar?.userData.flowerBouquet?.name || avatar?.userData.campusProp?.name || ''};
   const changed=!lastRoomPosition
     ||Math.hypot(current.x-lastRoomPosition.x,current.y-lastRoomPosition.y,current.z-lastRoomPosition.z)>0.06
     ||Math.abs(current.yaw-lastRoomPosition.yaw)>0.035
+    ||current.deskPose!==(lastRoomPosition.deskPose??0)
     ||current.prop!==lastRoomPosition.prop;
   if(changed&&roomSendClock>0.12){
     roomSendClock=0;
-    roomHeartbeatClock=0;
     lastRoomPosition=current;
     roomPost('/api/move',{id:roomId,position:current}).catch(()=>{});
-  }else if(roomHeartbeatClock>8){
-    roomHeartbeatClock=0;
-    roomPost('/api/heartbeat',{id:roomId}).catch(()=>{});
   }
 }
+
+function localPresenceStatus() {
+  if (document.hidden) return 'away';
+  return performance.now() - lastPresenceInput >= PRESENCE_IDLE_MS ? 'idle' : 'active';
+}
+
+function syncRoomPresence(force = false) {
+  if (!started || !roomJoined || !roomId) return;
+  const status = localPresenceStatus();
+  if (!force && sentPresenceStatus === status) return;
+  const id = roomId;
+  sentPresenceStatus = status;
+  presence.setStatus(id, status);
+  roomPost('/api/heartbeat', { id, status }).catch(() => {
+    if (roomId === id && sentPresenceStatus === status) sentPresenceStatus = undefined;
+  });
+}
+
+function notePresenceInput() {
+  if (!started) return;
+  lastPresenceInput = performance.now();
+  if (sentPresenceStatus !== 'active' && !document.hidden) syncRoomPresence();
+}
+
+for (const event of ['keydown', 'pointerdown', 'pointermove', 'wheel', 'input']) {
+  document.addEventListener(event, notePresenceInput, { capture: true, passive: true });
+}
+setInterval(() => syncRoomPresence(), 1000);
+setInterval(() => syncRoomPresence(true), PRESENCE_HEARTBEAT_MS);
+document.addEventListener('visibilitychange', () => syncRoomPresence(true));
+window.addEventListener('pagehide', () => disconnectRoom(true));
+window.addEventListener('pageshow', event => { if (event.persisted && started && !roomJoined) void connectRoom(); });
 
 function updateRemotePlayers(dt,time) {
   const alpha=1-Math.exp(-dt*16);
@@ -2449,11 +2714,15 @@ function updateRemotePlayers(dt,time) {
     const moving=remote.root.position.distanceToSquared(remote.target)>0.015;
     remote.root.userData.roomWalkPhase+=dt*(moving?8:0);
     const swing=moving?Math.sin(remote.root.userData.roomWalkPhase)*0.42:0;
-    remote.root.userData.legs[0].rotation.x=swing;
-    remote.root.userData.legs[1].rotation.x=-swing;
-    if(remote.root.userData.arms){
-      remote.root.userData.arms[0].rotation.x=-swing*0.6;
-      remote.root.userData.arms[1].rotation.x=swing*0.6;
+    remote.renderDeskPose+=(remote.deskPose-remote.renderDeskPose)*alpha;
+    setDeskPose(remote.root, remote.renderDeskPose);
+    if(remote.renderDeskPose<.02){
+      remote.root.userData.legs[0].rotation.x=swing;
+      remote.root.userData.legs[1].rotation.x=-swing;
+      if(remote.root.userData.arms){
+        remote.root.userData.arms[0].rotation.x=-swing*0.6;
+        remote.root.userData.arms[1].rotation.x=swing*0.6;
+      }
     }
     const anchor=projectedLabel.copy(remote.root.position).setY(remote.root.position.y + 2.12).project(camera);
     const onScreen=anchor.z>-1&&anchor.z<1&&anchor.x>-1.15&&anchor.x<1.15&&anchor.y>-1.1&&anchor.y<1.1;
@@ -2467,18 +2736,27 @@ function updateRemotePlayers(dt,time) {
   updatePlayerChatBubble(localChatBubble,avatar,localChatUntil,bubbleNow);
 }
 
-function disconnectRoom() {
+function disconnectRoom(beacon = false) {
   const leavingId=roomId;
   roomConnectionGeneration++;
   roomPollController?.abort();
   roomPollController=null;
   roomId='';
   roomJoined=false;
+  sentPresenceStatus=undefined;
+  presence.close();
+  presence.reset('offline');
   lastRoomPosition=null;
   for(const id of [...remotePlayers.keys()]) removeRemotePlayer(id);
   updateRoomCount();
   setRoomStatus('Đã rời phòng');
-  if(leavingId) roomPost('/api/leave',{id:leavingId}).catch(()=>{});
+  if (leavingId) {
+    if (!beacon) roomPost('/api/leave', { id: leavingId }).catch(() => {});
+    else {
+      const body = new Blob([JSON.stringify({ id: leavingId })], { type: 'application/json' });
+      if (!navigator.sendBeacon?.('/api/leave', body)) fetch('/api/leave', { method: 'POST', body, keepalive: true }).catch(() => {});
+    }
+  }
 }
 
 function openChatPanel() {
@@ -2614,25 +2892,35 @@ campusLoader.load(
       obj.receiveShadow = !obj.material?.transparent;
       if (obj.name.startsWith('COLLISION_')) obj.userData.collision = true;
     });
+    applyDetailedCampusCompatibility(campus);
     scene.add(campus);
-    buildCampusColliders(campus);
-    createCampusLampLights(campus);
-    collectTreeShadowAnchors(campus);
-    morningBeams = createMorningSunbeams(scenesOfDay[0].direction, mobile);
-    morningStructureShadows = createMorningStructureShadows(campus);
-    scene.add(morningBeams);
+    // One optional visual feature must never prevent the player, NPCs, quests
+    // and HUD from starting when a Blender export changes a mesh name again.
+    const featureErrors = window.__campusFeatureErrors = [];
+    const startFeature = (name, work) => {
+      try { return work(); }
+      catch (error) { featureErrors.push({ name, error: String(error?.message ?? error) }); console.error(`[Campus] ${name}`, error); return null; }
+    };
+    startFeature('classroom anchors', () => activities.classrooms.prepare(campus));
+    startFeature('colliders', () => buildCampusColliders(campus));
+    startFeature('night lighting', () => createCampusLampLights(campus));
+    startFeature('tree shadows', () => collectTreeShadowAnchors(campus));
+    morningBeams = startFeature('morning beams', () => createMorningSunbeams(scenesOfDay[0].direction, mobile));
+    morningStructureShadows = startFeature('morning shadows', () => createMorningStructureShadows(campus));
+    if (morningBeams) scene.add(morningBeams);
     if (morningStructureShadows) scene.add(morningStructureShadows);
-    applyDayLighting();
-    activities.init(campus);
-    addTeachersDayBanner(campus, scene, mobile);
-    traffic.init(campus);
-    createGateHorse(campus);
-    instanceCampusProps(campus);
+    startFeature('day lighting', applyDayLighting);
+    startFeature('activities and quests', () => activities.init(campus));
+    startFeature('20/11 banner', () => addTeachersDayBanner(campus, scene, mobile));
+    startFeature('traffic', () => traffic.init(campus));
+    startFeature('Bùi Quốc Hiệp 06', () => createGateHorse(campus));
+    startFeature('campus props', () => instanceCampusProps(campus));
     // Capture the named fountain anchors before static batching detaches their meshes.
-    createFountainEffect(campus);
-    batchCampusMeshes(campus);
+    startFeature('fountain', () => createFountainEffect(campus));
+    startFeature('static batching', () => batchCampusMeshes(campus));
+    startFeature('visibility optimisation', () => optimiseCampusVisibility(campus));
     dracoLoader.dispose();
-    createCampusNpcs();
+    startFeature('NPCs', createCampusNpcs);
     const startSurface = findWalkSurface(walker.x, walker.z, walker.y);
     if (startSurface !== null) walker.y = startSurface;
     campusLoaded = true;
@@ -2696,10 +2984,12 @@ $('#profileForm').addEventListener('submit', event => {
   if(!roomSpawnOffsetApplied){
     const angle=Math.random()*Math.PI*2;
     const radius=0.35+Math.random()*0.9;
-    walker.x+=Math.cos(angle)*radius;
-    walker.z+=Math.sin(angle)*radius;
-    const spawnSurface=findWalkSurface(walker.x,walker.z,walker.y);
-    if(spawnSurface!==null) walker.y=spawnSurface;
+    const x = walker.x + Math.cos(angle) * radius;
+    const z = walker.z + Math.sin(angle) * radius;
+    const spawnSurface = findWalkSurface(x, z, walker.y);
+    if (spawnSurface !== null && pointInBoundary(x, z) && !collidesAt(x, z, spawnSurface)) {
+      Object.assign(walker, { x, y: spawnSurface, z });
+    }
     roomSpawnOffsetApplied=true;
   }
   setProfile({ role:$('#visitorRole').value, name, className, year, gender:$('#gender').value, outfit, secret: $('#secretMode').value === 'yes' });
@@ -2710,6 +3000,7 @@ $('#profileForm').addEventListener('submit', event => {
     scene.add(avatar);
   }
   started = true;
+  lastPresenceInput = performance.now();
   activities.flowersProfileChanged(profile);
   activities.secretProfileChanged(profile);
   sound.start();
@@ -2749,6 +3040,7 @@ $('#editBtn').addEventListener('click', () => {
   campusMap.stop();
   activities.horseDialogue.reset();
   activities.leaveSeat();
+  activities.classrooms.reset();
   playerWasNearPrincipal=false;
   playerGreetingStart=null;
   disconnectRoom();
@@ -2770,6 +3062,7 @@ $('#editBtn').addEventListener('click', () => {
 });
 
 window.addEventListener('keydown', event => {
+  if (presence.open) return;
   if (event.target instanceof HTMLInputElement || event.target instanceof HTMLSelectElement || event.target instanceof HTMLTextAreaElement) return;
   if (event.code === 'KeyM' && started && !event.repeat) {
     event.preventDefault();
@@ -2876,7 +3169,8 @@ menuItems.addEventListener('click', event => {
 });
 
 function movePlayer(dt, time) {
-  if (!started || !avatar || campusMap.blocking || activities.blocksMovement) return;
+  if (!started || !avatar || presence.open || campusMap.blocking || activities.blocksMovement) return;
+  const previousFeetY = walker.y;
   if (!walker.onGround) {
     walker.y += walker.velocityY * dt;
     walker.velocityY -= 17.5 * dt;
@@ -2914,10 +3208,13 @@ function movePlayer(dt, time) {
     }
   }
 
-  const walkSurface = activities.insideClassroom ? activities.floorY() : findWalkSurface(walker.x, walker.z, walker.y);
+  const landingRise = Math.max(.06, previousFeetY - walker.y + .06);
+  const walkSurface = activities.insideClassroom ? activities.floorY()
+    : findWalkSurface(walker.x, walker.z, walker.y, walker.onGround ? .002 : landingRise);
   if (walkSurface !== null) {
     if (walker.onGround) {
-      walker.y = walkSurface;
+      if (walker.y - walkSurface <= WALK_STEP_HEIGHT) walker.y = walkSurface;
+      else walker.onGround = false;
     } else if (walker.velocityY <= 0 && walker.y <= walkSurface + 0.06) {
       walker.y = walkSurface;
       walker.velocityY = 0;
@@ -2947,9 +3244,9 @@ function movePlayer(dt, time) {
   positionOutdoorView();
 }
 
-function positionOutdoorView() {
+function positionOutdoorView(distance = cameraDistance) {
   const f = cameraForward.set(-Math.sin(walker.yaw), 0, -Math.cos(walker.yaw));
-  camera.position.set(walker.x - f.x * cameraDistance, cameraLift + walker.y, walker.z - f.z * cameraDistance);
+  camera.position.set(walker.x - f.x * distance, cameraLift + walker.y, walker.z - f.z * distance);
   camera.lookAt(walker.x, 1.12 + walker.y, walker.z);
 }
 
@@ -2964,18 +3261,29 @@ function animateClouds(time) {
 }
 
 renderer.setAnimationLoop(() => {
-  const dt = Math.min(clock.getDelta(),0.05);
-  movePlayer(dt,clock.elapsedTime);
+  const elapsed = clock.getDelta();
+  const dt = Math.min(elapsed, .1);
+  adjustRenderScale(elapsed);
+  // Short physics steps keep movement and collision stable on slower frames.
+  if (dt > .05) {
+    movePlayer(dt / 2, clock.elapsedTime);
+    movePlayer(dt / 2, clock.elapsedTime);
+  } else {
+    movePlayer(dt, clock.elapsedTime);
+  }
   if (started && clock.elapsedTime >= nextAmbience) {
     nextAmbience = clock.elapsedTime + .20;
     sound.applyAmbience();
   }
   animateClouds(clock.elapsedTime);
   activities.update(dt, clock.elapsedTime, started);
-  animateDayLighting();
+  lighting.frame(performance.now());
   traffic.update(dt, currentDay.night, started);
-  if (!dayBlend && currentDay.night > .002) updateNightLights();
-  animateFountain(clock.elapsedTime);
+  if (lighting.fadeStart === null && currentDay.lamps > .002) updateNightLights();
+  if (fountainEffectGroup) {
+    fountainEffectGroup.visible = !activities.insideClassroom && camera.position.distanceToSquared(fountainSource) < 80 ** 2;
+    if (fountainEffectGroup.visible) animateFountain(clock.elapsedTime);
+  }
   const checkNameTags = clock.elapsedTime >= nextNameTagCheck;
   if (checkNameTags) nextNameTagCheck = clock.elapsedTime + .2;
   updateGateHorse(dt, clock.elapsedTime, checkNameTags);
@@ -2983,12 +3291,13 @@ renderer.setAnimationLoop(() => {
   updateRoomNetwork(dt);
   updateRemotePlayers(dt,clock.elapsedTime);
   updateCampusShadows(clock.elapsedTime);
+  updateFurnitureVisibility();
   renderer.render(scene,camera);
 });
 
 window.addEventListener('resize', () => {
   camera.aspect = innerWidth / innerHeight;
   camera.updateProjectionMatrix();
-  renderer.setPixelRatio(Math.min(devicePixelRatio || 1, maxPixelRatio));
+  updateRenderResolution();
   renderer.setSize(innerWidth,innerHeight);
 });

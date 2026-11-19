@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 
-const backdropName = 'exec-f6f55854-0094-4da9-9209-4e0d2f24bded';
+export const teachersDayBackdropName = 'exec-f6f55854-0094-4da9-9209-4e0d2f24bded';
 
 function paintBanner(mobile) {
   const canvas = document.createElement('canvas');
@@ -148,7 +148,7 @@ function paintBanner(mobile) {
 }
 
 export function addTeachersDayBanner(campus, scene, mobile) {
-  const backing = campus.getObjectByName(backdropName);
+  const backing = campus.getObjectByName(teachersDayBackdropName);
   if (!backing?.isMesh) return;
   backing.updateWorldMatrix(true, false);
   const geometry = backing.geometry.clone();

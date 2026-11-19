@@ -56,6 +56,7 @@ export function createCampusMap({ active, player, yaw, indoors, players, canOpen
   const outlines = new Map();
   const buttons = new Map();
   const friends = new Map();
+  const npcMarkers = new Map();
   let shownZone;
   let candidate;
   let samples = 0;
@@ -120,6 +121,7 @@ export function createCampusMap({ active, player, yaw, indoors, players, canOpen
     node.title = name;
     node.setAttribute('aria-label', name);
     position(node, x, z);
+    npcMarkers.set(name, node);
     board.append(node);
     const label = document.createElement('span');
     label.textContent = icon + ' ' + name;
@@ -294,5 +296,9 @@ export function createCampusMap({ active, player, yaw, indoors, players, canOpen
   close.onclick = dismiss;
   overlay.addEventListener('close', stopInput);
   return { start, stop, open, toggle() { if (overlay.open) dismiss(); else open(); },
+    placeNpc(name, point) {
+      const marker = npcMarkers.get(name);
+      if (marker) position(marker, point.x, point.z);
+    },
     get blocking() { return overlay.open || fadeInProgress; } };
 }

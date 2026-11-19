@@ -91,7 +91,7 @@ function flushPollEvents(client) {
 }
 
 function queuePollEvent(client, eventName, value) {
-  if (eventName === 'player-move') {
+  if (eventName === 'player-move' || eventName === 'player-presence') {
     const existingIndex = client.pendingEvents.findIndex(event =>
       event.event === eventName && event.data.id === value.id
     );
@@ -116,8 +116,10 @@ function deliverRoomEvent(client, eventName, value) {
 }
 
 function playerSnapshot(client) {
-  return { id: client.id, profile: client.profile, position: client.position };
+  return { id: client.id, profile: client.profile, position: client.position, presence: client.presence ?? 'active' };
 }
+
+const validPresence = new Set(['active', 'idle', 'away']);
 
 function broadcast(room, eventName, value, excludeId = '') {
   const roomSet = clientsByRoom.get(room);
@@ -212,6 +214,7 @@ function cleanPosition(value) {
     y: asNumber(position.y, 0, -10, 80),
     z: asNumber(position.z, 0, -250, 250),
     yaw: asNumber(position.yaw, 0, -Math.PI * 20, Math.PI * 20),
+    deskPose: asNumber(position.deskPose, 0, 0, 1),
     prop: ['tea', 'soda', 'snack', 'bouquet'].includes(position.prop) ? position.prop : ''
   };
 }
@@ -323,6 +326,25 @@ async function handleApi(request, response, url) {
     return;
   }
 
+  if (url.pathname === '/api/classroom/seat') {
+    const client = getClient(body);
+    if (!client?.joined) { sendJson(response, 403, { error: 'Hãy vào trường trước.' }); return; }
+    if (typeof body.seat !== 'string' || !/^[a-z0-9-]{1,120}$/.test(body.seat) || !['claim', 'release'].includes(body.action)) {
+      sendJson(response, 400, { error: 'Ghế không hợp lệ.' }); return;
+    }
+    if (body.action === 'release') {
+      if (client.classroomSeat === body.seat) client.classroomSeat = undefined;
+      sendJson(response, 200, { ok: true }); return;
+    }
+    for (const other of roomClients(client.room)) {
+      if (other !== client && other.classroomSeat === body.seat) {
+        sendJson(response, 409, { error: 'Ghế này đang có người ngồi.' }); return;
+      }
+    }
+    client.classroomSeat = body.seat;
+    sendJson(response, 200, { ok: true }); return;
+  }
+
   if (url.pathname === '/api/classroom/board' || url.pathname === '/api/guestbook' || url.pathname === '/api/guestbook/heart') {
     const client = body && getClient(body);
     if (!client?.joined) { sendJson(response, 403, { error: 'Hãy vào trường trước.' }); return; }
@@ -366,6 +388,7 @@ async function handleApi(request, response, url) {
     if (!client.joined) {
       client.profile = cleanProfile(body.profile);
       client.position = cleanPosition(body.position);
+      client.presence = validPresence.has(body.status) ? body.status : 'active';
       client.joined = true;
       client.lastSeen = Date.now();
       broadcast(client.room, 'player-joined', playerSnapshot(client), client.id);
@@ -428,7 +451,13 @@ async function handleApi(request, response, url) {
 
   if (url.pathname === '/api/heartbeat') {
     const client = getClient(body);
-    if (client?.joined) client.lastSeen = Date.now();
+    if (client?.joined) {
+      client.lastSeen = Date.now();
+      if (validPresence.has(body.status) && body.status !== client.presence) {
+        client.presence = body.status;
+        broadcast(client.room, 'player-presence', { id: client.id, status: client.presence }, client.id);
+      }
+    }
     sendJson(response, client?.joined ? 200 : 404, { ok: Boolean(client?.joined) });
     return;
   }
@@ -482,7 +511,7 @@ function serveStatic(request, response, pathname) {
     });
     return;
   }
-  if (!/^\/(?:index\.html|app\.js|campus-activities\.js|campus-audio\.js|campus-flowers\.js|campus-secret\.js|campus-banner\.js|campus-traffic\.js|campus-map\.js|campus-parking\.js|campus-horse-dialog\.js|campus-morning-light\.js|style\.css|assets\/[^/\\]+)$/.test(decoded)) {
+  if (!/^\/(?:index\.html|app\.js|campus-activities\.js|campus-classrooms\.js|campus-lighting\.js|campus-presence\.js|campus-audio\.js|campus-flowers\.js|campus-secret\.js|campus-banner\.js|campus-traffic\.js|campus-map\.js|campus-parking\.js|campus-horse-dialog\.js|campus-morning-light\.js|style\.css|assets\/[^/\\]+)$/.test(decoded)) {
     response.writeHead(404); response.end('Not found'); return;
   }
   const fullPath = path.resolve(ROOT, `.${decoded}`);
@@ -560,12 +589,14 @@ server.on('close', () => {
   clearInterval(chatBatchFlush);
 });
 server.listen(PORT, '0.0.0.0', () => {
-  console.log(`Tham quan trường + chat đang chạy tại http://localhost:${PORT}`);
+  const port = server.address().port;
+  console.log(`Tham quan trường + chat đang chạy tại http://127.0.0.1:${port}/`);
   console.log('Các thiết bị cùng Wi-Fi có thể mở một trong các địa chỉ LAN sau:');
   for (const addresses of Object.values(os.networkInterfaces())) {
     for (const address of addresses || []) {
-      if (address.family === 'IPv4' && !address.internal) console.log(`  http://${address.address}:${PORT}`);
+      if (address.family === 'IPv4' && !address.internal) console.log(`  http://${address.address}:${port}`);
     }
   }
   console.log('Dừng máy chủ bằng Ctrl+C.');
+  if (process.send) process.send({ port });
 });

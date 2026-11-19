@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { createClassroomSystems } from './campus-classrooms.js';
 import { addStudentParking } from './campus-parking.js';
 import { createGateHorseDialogue } from './campus-horse-dialog.js';
 import { createFlowerQuest } from './campus-flowers.js';
@@ -24,7 +25,7 @@ export function createCampusProp(kind, color = { tea: 0xc49a6c, soda: 0xb94734, 
   return prop;
 }
 
-export function createCampusActivities({ scene, camera, renderer, walker, keys, post, getPlayer, getRoom, getProfile, floor, notice, mobile, sound, outdoorOpen, setFace, openTravel, pickupClearance, resetInput, faceHorse }) {
+export function createCampusActivities({ scene, camera, renderer, walker, keys, post, getPlayer, getRoom, getProfile, floor, notice, mobile, sound, outdoorOpen, setFace, openTravel, pickupClearance, resetInput, faceHorse, collides, positionCamera, playerBox }) {
   const prompt = document.querySelector('#campusActions');
   const action = prompt.querySelector('button');
   const secondary = document.querySelector('#campusSecondary');
@@ -88,6 +89,8 @@ export function createCampusActivities({ scene, camera, renderer, walker, keys, 
     restoreFocus: () => renderer.domElement.focus()
   });
   const flowers = createFlowerQuest({ scene, walker, getPlayer, getProfile, floor, outdoorOpen, pickupClearance, sound, addTarget, notice, complete, showOptions, setFace });
+  const classrooms = createClassroomSystems({ walker, getPlayer, getRoom, post, floor, collides, notice, resetInput, positionCamera, playerBox, stand, sound,
+    openDialog(heading) { openDialog(heading); return { dialog, content }; } });
   dialog.querySelector('.campus-close').onclick = () => dialog.close();
   dialog.addEventListener('close', () => {
     viewingNotes++;
@@ -99,9 +102,9 @@ export function createCampusActivities({ scene, camera, renderer, walker, keys, 
     document.body.classList.remove('campus-photo-open');
     keys.clear();
   });
-  stand.onclick = leaveSeat;
+  stand.onclick = () => { if (classrooms.blocked) classrooms.standUp(); else leaveSeat(); };
   action.onclick = () => {
-    if (!nearby || !inReach(nearby)) return;
+    if (!nearby || classrooms.blocked || !inReach(nearby)) return;
     if (mobile && nearby.alternateReady?.()) nearby.alternate();
     else if (mobile && nearby.alternateLabel === 'Dâng hoa') {
       const tribute = nearby;
@@ -192,8 +195,9 @@ export function createCampusActivities({ scene, camera, renderer, walker, keys, 
         key: 'KeyF', icon: '🕯️', alternateLabel: 'Dâng hoa', alternate: () => startTribute(tribute, true)
       });
     }
+    const benchGroupName = THREE.PropertyBinding.sanitizeNodeName('Rounded granite seats • linked benches');
     campus.traverse(object => {
-      if (!/^Bench_(Courtyard_)?\d+$/.test(object.name)) return;
+      if (!/^Bench_(Courtyard_)?\d+$/.test(object.name) && object.parent?.name !== benchGroupName) return;
       const box = bounds(object);
       const size = box.getSize(new THREE.Vector3());
       const point = center(object);
@@ -208,19 +212,31 @@ export function createCampusActivities({ scene, camera, renderer, walker, keys, 
     const entry = campus.getObjectByName('Khu_C1_2Tang_CanhCuaDi_0_4');
     if (entry) {
       const entryPoint = center(entry);
-      returnPoint = vector(entryPoint.x, 1.1, entryPoint.z + 2.35);
-      const hinge = makeHinge(entry);
+      const detailedDoor = Boolean(entry.userData.detailedCampusName);
+      const box = bounds(entry);
+      const across = box.max.x - box.min.x < box.max.z - box.min.z ? vector(1, 0, 0) : vector(0, 0, 1);
+      returnPoint = [2, -2, 2.7, -2.7].map(offset => {
+        const point = entryPoint.clone().addScaledVector(across, offset);
+        point.y = floor(point.x, point.z, box.min.y);
+        return point;
+      }).find(point => point.y !== null && outdoorOpen(point)) ?? vector(entryPoint.x, 1.1, entryPoint.z + 2.35);
       buildClassroom();
-      addTarget(entry, () => hinge.open ? '[E] Đóng cửa lớp C1' : '[E] Mở cửa lớp C1',
-        3.3, () => { hinge.open = !hinge.open; sound.effect('door'); }, { key: 'KeyE', clickable: true, icon: '🚪',
+      const enter = () => {
+        teleport(room.origin.clone().add(vector(0, .01, 4.4)), 0, true);
+        notice('Lớp C1 · Bấm vào công tắc hoặc bảng xanh.');
+      };
+      if (detailedDoor) {
+        addTarget(entry, '[E] Vào phòng thực hành C1', 1.8, enter,
+          { key: 'KeyE', icon: '🚪', point: entryPoint, clickable: false });
+      } else {
+        const hinge = makeHinge(entry);
+        addTarget(entry, () => hinge.open ? '[E] Đóng cửa lớp C1' : '[E] Mở cửa lớp C1',
+        3.3, () => { hinge.open = !hinge.open; sound.effect('door'); }, { key: 'KeyE', clickable: true, icon: '🚪', point: entryPoint,
           alternateLabel: 'Vào lớp C1',
           alternateReady: () => hinge.open,
-          alternate: () => {
-            teleport(room.origin.clone().add(vector(0, .01, 4.4)), 0, true);
-            hinge.open = false;
-            notice('Lớp C1 · Bấm vào công tắc hoặc bảng xanh.');
-          }
+          alternate: () => { enter(); hinge.open = false; }
         });
+      }
     }
     const board = campus.getObjectByName('MatBangTinGiua006') || campus.getObjectByName('MatBangTinGiua002');
     if (board) {
@@ -607,7 +623,7 @@ export function createCampusActivities({ scene, camera, renderer, walker, keys, 
   }
 
   function captureAllowed() {
-    return active && getPlayer() && !indoors && !ceremony && !dialog.open
+    return active && getPlayer() && !indoors && !ceremony && !dialog.open && !classrooms.blocked
       && !horseDialogue.talking && !flowers.giving && !secret.climbing && (!seated || seated.parking);
   }
 
@@ -743,6 +759,13 @@ export function createCampusActivities({ scene, camera, renderer, walker, keys, 
 
   function handleKey(event) {
     if (captured || dialog.open || horseDialogue.modalOpen || flowers.giving || secret.climbing) return true;
+    if (classrooms.blocked) {
+      if (!event.repeat && (event.code === 'KeyE' || event.code === 'Space')) {
+        event.preventDefault();
+        classrooms.standUp();
+      }
+      return true;
+    }
     if (horseDialogue.optionsOpen) {
       if (event.code === 'Escape') {
         horseDialogue.dismiss();
@@ -768,11 +791,11 @@ export function createCampusActivities({ scene, camera, renderer, walker, keys, 
   }
 
   function click(x, y) {
-    if (!active || seated || ceremony || dialog.open || horseDialogue.modalOpen || flowers.giving || secret.climbing) return;
+    if (!active || seated || classrooms.blocked || ceremony || dialog.open || horseDialogue.modalOpen || flowers.giving || secret.climbing) return;
     const rect = renderer.domElement.getBoundingClientRect();
     pointer.set((x - rect.left) / rect.width * 2 - 1, 1 - (y - rect.top) / rect.height * 2);
     ray.setFromCamera(pointer, camera);
-    const candidates = targets.filter(target => target.clickable !== false && inReach(target));
+    const candidates = [...targets, ...classrooms.targetsNear()].filter(target => target.clickable !== false && inReach(target));
     const objects = new Map(candidates.map(target => [target.object, target]));
     const hit = ray.intersectObjects([...objects.keys()], true)[0];
     for (let object = hit?.object; object; object = object.parent) {
@@ -782,6 +805,8 @@ export function createCampusActivities({ scene, camera, renderer, walker, keys, 
 
   function update(dt, time, started) {
     active = started;
+    // Classroom doors and desks reuse the regular movement and interaction loop.
+    classrooms.update(dt, started && !indoors);
     flowers.update(dt, time, started);
     secret.update(started, Boolean(indoors || seated || ceremony || dialog.open || horseDialogue.modalOpen || flowers.giving));
     const now = performance.now();
@@ -869,8 +894,8 @@ export function createCampusActivities({ scene, camera, renderer, walker, keys, 
       nearby = undefined;
       let best = Infinity;
       let bestPriority = 0;
-      if (started && !seated && !ceremony && !dialog.open && !flowers.giving && !secret.climbing) {
-        for (const target of targets) {
+      if (started && !seated && !classrooms.blocked && !ceremony && !dialog.open && !flowers.giving && !secret.climbing) {
+        for (const target of [...targets, ...classrooms.targetsNear()]) {
           if (target.proximity === false || !inReach(target)) continue;
           const range = distance(target.point, walker);
           const priority = target.priority?.() ?? 0;
@@ -881,7 +906,7 @@ export function createCampusActivities({ scene, camera, renderer, walker, keys, 
       }
       if (boardSign && !indoors && distance(boardSign.position, walker) < 12 && now >= nextGuestbookRead) refreshGuestbookBoard();
     }
-    const actionable = Boolean(nearby) && !seated && !ceremony && !dialog.open && !horseDialogue.talking && !flowers.giving && !secret.climbing;
+    const actionable = Boolean(nearby) && !seated && !classrooms.blocked && !ceremony && !dialog.open && !horseDialogue.talking && !flowers.giving && !secret.climbing;
     prompt.hidden = !actionable;
     if (actionable) {
       const label = typeof nearby.label === 'function' ? nearby.label() : nearby.label;
@@ -1090,6 +1115,7 @@ export function createCampusActivities({ scene, camera, renderer, walker, keys, 
 
   return {
     init, update, click, handleKey, drawBoard, openTravel, openProgress, openAudio, registerNpc, registerGateHorse, talk,
+    classrooms,
     leaveSeat, horseDialogue,
     teleportToMap(point, yaw) { teleport(point, yaw, false); },
     get dialogSpeaker() { return dialog.open ? dialogSpeaker : null; },
@@ -1097,7 +1123,7 @@ export function createCampusActivities({ scene, camera, renderer, walker, keys, 
     registerSecretGuard: secret.registerGuard, registerSecretVendor: secret.registerVendor,
     revealSecretClue: secret.revealClue, secretProfileChanged: secret.profileChanged,
     get trafficWarningActive() { return secret.trafficWarningActive; },
-    get blocksMovement() { return Boolean(captured || seated || ceremony || dialog.open || horseDialogue.modalOpen || flowers.giving || secret.climbing); },
+    get blocksMovement() { return Boolean(captured || seated || classrooms.blocked || ceremony || dialog.open || horseDialogue.modalOpen || flowers.giving || secret.climbing); },
     get chilling() { return Boolean(seated); },
     get activeIncenseLights() { return activeIncenseLights; },
     get insideClassroom() { return indoors; },

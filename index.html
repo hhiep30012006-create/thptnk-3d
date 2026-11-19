@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
   <meta name="theme-color" content="#8e2a22">
   <title>THPT Nguyễn Khuyến · Tham quan 3D</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%238e2a22'/%3E%3Cpath d='M5 14l11-5 11 5-11 5zM9 18l7 3 7-3v4l-7 3-7-3z' fill='%23fff4d7'/%3E%3C/svg%3E">
   <link rel="stylesheet" href="style.css">
   <script type="importmap">
     {"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"}}
@@ -16,10 +17,10 @@
   <header id="hud" hidden>
     <div class="brand"><strong>THPT Nguyễn Khuyến</strong><span>Tham quan sân trường 3D</span></div>
     <div class="student"><b id="studentName"></b><span id="studentClass"></span></div>
-    <div id="environmentStatus" class="environment-status" role="status" aria-live="polite">07:30 · Nắng sớm · 24°C</div>
+    <div id="environmentStatus" class="environment-status" aria-label="Giờ thiết bị">--:--</div>
     <button id="mapBtn" class="pill" type="button" aria-haspopup="dialog" aria-controls="campusMap">📍 Bản đồ <kbd>M</kbd></button>
-    <button id="chatToggle" class="pill" type="button" aria-expanded="false" aria-controls="chatPanel">💬 Chat <span id="onlineCount">0</span><span id="chatUnread" class="chat-unread" aria-label="Tin nhắn chưa đọc" hidden>0</span></button>
-    <button type="button" class="pill" data-day-cycle><span aria-hidden="true">☀️</span></button>
+    <button id="chatToggle" class="pill" type="button" aria-expanded="false" aria-controls="chatPanel">💬 Chat<span id="onlineCount" hidden>0</span><span id="chatUnread" class="chat-unread" aria-label="Tin nhắn chưa đọc" hidden>0</span></button>
+    <button id="presenceToggle" class="pill" type="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="presenceDialog"><span aria-hidden="true">👥</span> Online <span class="presence-count" data-presence-count>0</span></button>
     <button id="musicMenu" class="pill" type="button" aria-label="Âm thanh">🎵</button>
     <button id="editBtn" class="pill" type="button">Đổi nhân vật</button>
   </header>
@@ -29,6 +30,16 @@
     <div id="chatMessages" role="log" aria-live="polite" aria-relevant="additions"></div>
     <form id="chatForm" autocomplete="off"><input id="chatInput" maxlength="240" placeholder="Nhắn cho mọi người…" aria-label="Tin nhắn"><button type="submit">Gửi</button></form>
   </aside>
+
+  <dialog id="presenceDialog" aria-labelledby="presenceTitle">
+    <header class="chat-heading"><h2 id="presenceTitle">Online · 0 người</h2><button id="presenceClose" type="button" aria-label="Đóng danh sách Online" autofocus>×</button></header>
+    <div class="presence-filters">
+      <input id="presenceSearch" type="search" placeholder="Tìm tên hoặc lớp" aria-label="Tìm người online theo tên hoặc lớp">
+      <select id="presenceSort" aria-label="Sắp xếp người online"><option value="name">Theo tên</option><option value="cohort">Theo niên khóa / lớp</option></select>
+    </div>
+    <p id="presenceMessage" role="status">Đang kết nối phòng…</p>
+    <ul id="presenceList" aria-label="Người đang online"></ul>
+  </dialog>
 
   <div id="locationBanner" hidden>
     <span aria-hidden="true">📍</span>
@@ -65,13 +76,14 @@
     <span>Kéo chuột để xoay góc nhìn</span><span><kbd>M</kbd> bản đồ</span>
   </footer>
   <div id="mobileMoveZone" aria-hidden="true" hidden></div>
+  <time id="mobileEnvironmentClock" aria-label="Giờ thiết bị">--:--</time>
   <nav id="mobileMenu" aria-label="Điều khiển chuyến tham quan" hidden>
     <button id="mobileMenuToggle" type="button" aria-label="Menu" aria-expanded="false" aria-controls="mobileMenuItems">☰</button>
     <div id="mobileMenuItems" hidden>
       <button type="button" data-menu="travel" aria-haspopup="dialog" aria-controls="campusMap">📍 <span>Bản đồ</span></button>
       <button type="button" data-menu="progress">☑ <span>Nhiệm vụ</span></button>
       <button type="button" data-menu="chat">💬 <span>Chat</span><span id="mobileMenuChatUnread" class="chat-unread" aria-label="Tin nhắn chưa đọc" hidden>0</span></button>
-      <button type="button" data-day-cycle><span aria-hidden="true">☀️</span> <span>Ánh sáng</span></button>
+      <button type="button" id="mobilePresenceToggle" data-menu="online" aria-haspopup="dialog" aria-expanded="false" aria-controls="presenceDialog">👥 <span>Online</span> <span class="presence-count" data-presence-count>0</span></button>
       <button type="button" data-menu="music">🎵 <span>Nhạc nền</span></button>
     </div>
   </nav>
@@ -217,7 +229,9 @@
     <header><h2 id="campusDialogTitle"></h2><button class="campus-close" type="button" aria-label="Đóng">×</button></header>
     <div class="campus-dialog-content"></div>
   </dialog>
-  <script src="nipplejs.js"></script>
+  <!-- server.js serves this locally; the CDN fallback keeps mobile controls
+       usable when the author previews with VS Code Live Server on port 5500. -->
+  <script src="nipplejs.js" onerror="this.onerror=null;this.src='https://cdn.jsdelivr.net/npm/nipplejs@0.10.2/dist/nipplejs.min.js'"></script>
   <script type="module" src="app.js"></script>
 </body>
 </html>

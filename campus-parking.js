@@ -131,7 +131,37 @@ export function addStudentParking(campus, scene, findFloor) {
       }
     }
   }
-  if (!columns.length) return null;
+  // The detailed GLB retains the posts at both ends of the long parking area.
+  if (!columns.length) {
+    const frontStart = column('Truoc', 4, '004');
+    const rearStart = column('Sau', 4, '004');
+    const frontEnd = column('Truoc', 0, '002');
+    const rearEnd = column('Sau', 0, '002');
+    if (frontStart && rearStart && frontEnd && rearEnd) {
+      for (let bay = 0; bay < 12; bay++) {
+        const fraction = (bay + .5) / 12;
+        columns.push([frontStart.clone().lerp(frontEnd, fraction), rearStart.clone().lerp(rearEnd, fraction)]);
+      }
+    }
+  }
+  let singleRow = false;
+  if (!columns.length) {
+    const shed = campus.getObjectByName('ScooterShed_Gate');
+    if (!shed) return null;
+    const shedBounds = box.setFromObject(shed);
+    const size = shedBounds.getSize(new THREE.Vector3());
+    const spanX = size.x >= size.z;
+    const count = Math.max(1, Math.floor((spanX ? size.x : size.z) / 1.15));
+    const center = shedBounds.getCenter(new THREE.Vector3());
+    singleRow = true;
+    for (let bay = 0; bay < count; bay++) {
+      const fraction = (bay + .5) / count;
+      const point = center.clone();
+      if (spanX) point.x = THREE.MathUtils.lerp(shedBounds.min.x, shedBounds.max.x, fraction);
+      else point.z = THREE.MathUtils.lerp(shedBounds.min.z, shedBounds.max.z, fraction);
+      columns.push([point, point]);
+    }
+  }
 
   const material = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: .8 });
   // Instance colors affect painted panels while the tires, trim and license plates retain their palette.
@@ -147,6 +177,7 @@ export function addStudentParking(campus, scene, findFloor) {
   const slots = [[], []];
   const vacancies = [new Set([4, 9, 11]), new Set([1, 6, 10])];
   for (const [row, gaps] of vacancies.entries()) {
+    if (singleRow && row > 0) break;
     for (const [bay, [front, rear]] of columns.entries()) {
       if (gaps.has(bay)) continue;
       const point = front.clone().lerp(rear, row === 0 ? .22 : .73);
@@ -175,7 +206,7 @@ export function addStudentParking(campus, scene, findFloor) {
       matrix.compose(point, orientation, unitScale);
       mesh.setMatrixAt(index, matrix);
       mesh.setColorAt(index, new THREE.Color(paint[(bay * 3 + row * 2 + type) % paint.length]));
-      if (type === 0 && row === 1 && bay === 5) helmet = makeHelmet(matrix);
+      if (type === 0 && (singleRow ? bay === 0 : row === 1 && bay === 5)) helmet = makeHelmet(matrix);
       return {
         point: saddle.clone().applyMatrix4(matrix),
         approach: point,
