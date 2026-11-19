@@ -24,6 +24,7 @@ const moveStick = new THREE.Vector2();
 const cameraForward = new THREE.Vector3();
 let nextShadowUpdate = 0;
 const projectedLabel = new THREE.Vector3();
+const projectedChatBubble = new THREE.Vector3();
 let nextNameTagCheck = 0;
 const camera = new THREE.PerspectiveCamera(58, innerWidth / innerHeight, 0.1, 900);
 const renderer = new THREE.WebGLRenderer({ antialias: !mobile, powerPreference: 'high-performance', preserveDrawingBuffer: true });
@@ -553,6 +554,9 @@ let roomHeartbeatClock = 0;
 let lastRoomPosition = null;
 let roomSpawnOffsetApplied = false;
 const remotePlayers = new Map();
+let unreadChatCount = 0;
+let localChatBubble = null;
+let localChatUntil = 0;
 const sound = createCampusSound(() => walker);
 const activities = createCampusActivities({
   scene, camera, renderer, walker, keys,
@@ -1082,14 +1086,15 @@ function createFountainEffect(campus) {
   const poolBounds = new THREE.Box3().setFromObject(pool);
   const poolSize = poolBounds.getSize(new THREE.Vector3());
   const center = poolBounds.getCenter(new THREE.Vector3());
-  const waterY = poolBounds.max.y + 0.035;
+  const waterY = poolBounds.max.y + 0.055;
   const nozzle = campus.getObjectByName('OngPhunNuoc');
   const nozzleBounds = nozzle ? new THREE.Box3().setFromObject(nozzle) : null;
   const nozzleCenter = nozzleBounds ? nozzleBounds.getCenter(new THREE.Vector3()) : center.clone();
-  // Emit directly from the tip of the actual nozzle, not from points around the basin.
+  // Emit above the real nozzle.  A small upward offset keeps the effect clear
+  // of the stone pedestal even after the static campus meshes are batched.
   const source = new THREE.Vector3(
     nozzleCenter.x,
-    nozzleBounds ? nozzleBounds.max.y - 0.025 : waterY + 0.95,
+    Math.max(nozzleBounds ? nozzleBounds.max.y + 0.06 : waterY + 1.04, waterY + 0.32),
     nozzleCenter.z
   );
   fountainSource = source.clone();
@@ -1100,17 +1105,17 @@ function createFountainEffect(campus) {
   fountainRipples = [];
   fountainMistParticles = [];
   const outerWater = new THREE.MeshBasicMaterial({
-    color: 0x72dfff, transparent: true, opacity: 0.68, depthWrite: false,
+    color: 0x80d8ff, transparent: true, opacity: 0.85, depthWrite: false,
     side: THREE.DoubleSide
   });
   const innerWater = new THREE.MeshBasicMaterial({
-    color: 0xe5fcff, transparent: true, opacity: 0.88, depthWrite: false,
+    color: 0xaee8ff, transparent: true, opacity: 0.92, depthWrite: false,
     side: THREE.DoubleSide
   });
   const dropletMaterial = new THREE.MeshBasicMaterial({
-    color: 0xc8f5ff, transparent: true, opacity: 0.92, depthWrite: false
+    color: 0xaee8ff, transparent: true, opacity: 0.85, depthWrite: false
   });
-  const dropletGeometry = new THREE.SphereGeometry(0.052, 8, 6);
+  const dropletGeometry = new THREE.SphereGeometry(0.065, 8, 6);
   const jetCount = 8;
 
   for (let i = 0; i < jetCount; i++) {
@@ -1129,10 +1134,10 @@ function createFountainEffect(campus) {
       THREE.MathUtils.lerp(start.z, landing.z, 0.52)
     );
     const curve = new THREE.CatmullRomCurve3([start, mid, landing]);
-    const tube = new THREE.Mesh(new THREE.TubeGeometry(curve, 30, 0.045, 6, false), outerWater);
+    const tube = new THREE.Mesh(new THREE.TubeGeometry(curve, 30, 0.055, 6, false), outerWater);
     tube.name = `TiaNuoc_${i + 1}`;
     fountainEffectGroup.add(tube);
-    const core = new THREE.Mesh(new THREE.TubeGeometry(curve, 30, 0.014, 5, false), innerWater);
+    const core = new THREE.Mesh(new THREE.TubeGeometry(curve, 30, 0.018, 5, false), innerWater);
     core.name = `LoiTiaNuoc_${i + 1}`;
     fountainEffectGroup.add(core);
 
@@ -1147,7 +1152,7 @@ function createFountainEffect(campus) {
 
     for (let j = 0; j < 2; j++) {
       const rippleMaterial = new THREE.MeshBasicMaterial({
-        color: 0x8deaff, transparent: true, opacity: 0.38,
+        color: 0x80d8ff, transparent: true, opacity: 0.48,
         depthWrite: false, side: THREE.DoubleSide
       });
       const ripple = new THREE.Mesh(new THREE.TorusGeometry(1, 0.025, 5, 28), rippleMaterial);
@@ -1163,7 +1168,7 @@ function createFountainEffect(campus) {
   const mistCount = 120;
   const mistGeometry = new THREE.SphereGeometry(0.03, 6, 5);
   const mistMaterial = new THREE.MeshBasicMaterial({
-    color: 0xc8f5ff, transparent: true, opacity: 0.82, depthWrite: false
+    color: 0xaee8ff, transparent: true, opacity: 0.85, depthWrite: false
   });
   fountainMistMesh = new THREE.InstancedMesh(mistGeometry, mistMaterial, mistCount);
   fountainMistMesh.name = 'HatNuocMuaPhun';
@@ -2175,6 +2180,77 @@ function appendRoomMessages(messages) {
   if(list) list.scrollTop=list.scrollHeight;
 }
 
+function updateChatUnread() {
+  const label=unreadChatCount>9?'9+':String(unreadChatCount);
+  for(const badge of [$('#chatUnread'),$('#mobileMenuChatUnread'),$('#mobileChatUnread')]) {
+    if(!badge) continue;
+    badge.hidden=unreadChatCount===0;
+    badge.textContent=label;
+  }
+}
+
+function clearChatUnread() {
+  if(!unreadChatCount) return;
+  unreadChatCount=0;
+  updateChatUnread();
+}
+
+function createPlayerChatBubble(own=false) {
+  const bubble=document.createElement('div');
+  bubble.className=`player-chat-bubble${own?' is-own':''}`;
+  bubble.hidden=true;
+  $('#npcLabels').append(bubble);
+  return bubble;
+}
+
+function showLocalChatBubble(text) {
+  if(!avatar||!text) return;
+  localChatBubble ??= createPlayerChatBubble(true);
+  localChatBubble.textContent=text;
+  localChatBubble.hidden=false;
+  localChatBubble.style.opacity='1';
+  localChatUntil=performance.now()+5000;
+}
+
+function showRemoteChatBubble(remote,text) {
+  if(!remote||!text) return;
+  remote.chatBubble ??= createPlayerChatBubble();
+  remote.chatBubble.textContent=text;
+  remote.chatBubble.hidden=false;
+  remote.chatBubble.style.opacity='1';
+  remote.chatUntil=performance.now()+5000;
+}
+
+function updatePlayerChatBubble(bubble,root,until,now) {
+  if(!bubble) return;
+  if(!started||!root||!root.visible||now>=until) {
+    bubble.hidden=true;
+    return;
+  }
+  const anchor=projectedChatBubble.copy(root.position).setY(root.position.y+2.68).project(camera);
+  const onScreen=anchor.z>-1&&anchor.z<1&&anchor.x>-1.15&&anchor.x<1.15&&anchor.y>-1.1&&anchor.y<1.1;
+  bubble.hidden=!onScreen;
+  if(!onScreen) return;
+  bubble.style.opacity=String(Math.min(1,Math.max(0,(until-now)/220)));
+  bubble.style.left=`${(anchor.x*.5+.5)*innerWidth}px`;
+  bubble.style.top=`${(-anchor.y*.5+.5)*innerHeight}px`;
+}
+
+function receiveRoomChat(message) {
+  appendRoomMessage(message);
+  if(!message?.id||message.type==='system') return;
+  if(message.id===roomId) {
+    showLocalChatBubble(message.text||'');
+    return;
+  }
+  showRemoteChatBubble(remotePlayers.get(message.id),message.text||'');
+  if($('#chatPanel').hidden) {
+    unreadChatCount++;
+    updateChatUnread();
+  }
+  sound.effect('chat');
+}
+
 function setRemoteProp(root, kind) {
   if (root.userData.campusProp?.name === kind) return;
   root.userData.campusProp?.removeFromParent();
@@ -2210,7 +2286,7 @@ function addRemotePlayer(data) {
   nameTag.className='npc-name-tag remote-player-tag';
   nameTag.textContent=avatarTag(remoteProfile);
   $('#npcLabels').append(nameTag);
-  const remote={id:data.id,profile:remoteProfile,root,nameTag,target,targetYaw:Number(incomingPosition.yaw)||0,lastSeen:performance.now(),renderY:target.y,jumpStartedAt:0,jumpBaseY:target.y};
+  const remote={id:data.id,profile:remoteProfile,root,nameTag,target,targetYaw:Number(incomingPosition.yaw)||0,lastSeen:performance.now(),renderY:target.y,jumpStartedAt:0,jumpBaseY:target.y,chatBubble:null,chatUntil:0};
   remotePlayers.set(data.id,remote);
   updateRoomCount();
   return remote;
@@ -2221,6 +2297,7 @@ function removeRemotePlayer(id) {
   if(!remote) return;
   scene.remove(remote.root);
   remote.nameTag.remove();
+  remote.chatBubble?.remove();
   remotePlayers.delete(id);
   updateRoomCount();
 }
@@ -2260,9 +2337,9 @@ function handleRoomEvent(type,data) {
     removeRemotePlayer(data.id);
     setRoomStatus(roomJoined?`Đang tham quan · ${remotePlayers.size+1} người`:'Đang nối máy chủ…');
   }else if(type==='chat'){
-    appendRoomMessage(data);
+    receiveRoomChat(data);
   }else if(type==='chat-batch'){
-    appendRoomMessages(data);
+    for(const message of Array.isArray(data)?data:[]) receiveRoomChat(message);
   }
 }
 
@@ -2303,6 +2380,7 @@ async function connectRoom() {
     for(const remote of remotePlayers.values()){
       scene.remove(remote.root);
       remote.nameTag.remove();
+      remote.chatBubble?.remove();
     }
     remotePlayers.clear();
     for(const player of data.players||[]) addRemotePlayer(player);
@@ -2350,6 +2428,7 @@ function updateRoomNetwork(dt) {
 
 function updateRemotePlayers(dt,time) {
   const alpha=1-Math.exp(-dt*16);
+  const bubbleNow=performance.now();
   for(const remote of remotePlayers.values()){
     remote.root.position.x=THREE.MathUtils.lerp(remote.root.position.x, remote.target.x, alpha);
     remote.root.position.z=THREE.MathUtils.lerp(remote.root.position.z, remote.target.z, alpha);
@@ -2383,7 +2462,9 @@ function updateRemotePlayers(dt,time) {
       remote.nameTag.style.left=`${(anchor.x*0.5+0.5)*innerWidth}px`;
       remote.nameTag.style.top=`${(-anchor.y*0.5+0.5)*innerHeight}px`;
     }
+    updatePlayerChatBubble(remote.chatBubble,remote.root,remote.chatUntil,bubbleNow);
   }
+  updatePlayerChatBubble(localChatBubble,avatar,localChatUntil,bubbleNow);
 }
 
 function disconnectRoom() {
@@ -2400,15 +2481,30 @@ function disconnectRoom() {
   if(leavingId) roomPost('/api/leave',{id:leavingId}).catch(()=>{});
 }
 
-$('#chatToggle').addEventListener('click',()=>{
+function openChatPanel() {
   const panel=$('#chatPanel');
-  panel.hidden=!panel.hidden;
-  $('#chatToggle').setAttribute('aria-expanded',String(!panel.hidden));
-  if(!panel.hidden) $('#chatInput').focus();
-});
-$('#chatClose').addEventListener('click',()=>{
+  panel.hidden=false;
+  $('#chatToggle').setAttribute('aria-expanded','true');
+  $('#mobileChatQuick').setAttribute('aria-expanded','true');
+  clearChatUnread();
+  $('#chatInput').focus();
+}
+
+function closeChatPanel() {
   $('#chatPanel').hidden=true;
   $('#chatToggle').setAttribute('aria-expanded','false');
+  $('#mobileChatQuick').setAttribute('aria-expanded','false');
+}
+
+function toggleChatPanel() {
+  if($('#chatPanel').hidden) openChatPanel();
+  else closeChatPanel();
+}
+
+$('#chatToggle').addEventListener('click',toggleChatPanel);
+$('#mobileChatQuick').addEventListener('click',openChatPanel);
+$('#chatClose').addEventListener('click',()=>{
+  closeChatPanel();
 });
 $('#chatForm').addEventListener('submit',event=>{
   event.preventDefault();
@@ -2532,10 +2628,11 @@ campusLoader.load(
     traffic.init(campus);
     createGateHorse(campus);
     instanceCampusProps(campus);
+    // Capture the named fountain anchors before static batching detaches their meshes.
+    createFountainEffect(campus);
     batchCampusMeshes(campus);
     dracoLoader.dispose();
     createCampusNpcs();
-    createFountainEffect(campus);
     const startSurface = findWalkSurface(walker.x, walker.z, walker.y);
     if (startSurface !== null) walker.y = startSurface;
     campusLoaded = true;
@@ -2621,6 +2718,7 @@ $('#profileForm').addEventListener('submit', event => {
   $('#help').hidden = false;
   $('#mobileMoveZone').hidden = !mobile;
   $('#campusJump').hidden = !mobile;
+  $('#mobileChatQuick').hidden = !mobile;
   $('#mobileMenu').hidden = !mobile;
   document.body.classList.add('campus-started');
   avatar.position.set(walker.x, walker.y, walker.z);
@@ -2659,7 +2757,13 @@ $('#editBtn').addEventListener('click', () => {
   $('#help').hidden = true;
   $('#mobileMoveZone').hidden = true;
   $('#campusJump').hidden = true;
+  $('#mobileChatQuick').hidden = true;
   $('#mobileMenu').hidden = true;
+  localChatBubble?.remove();
+  localChatBubble=null;
+  localChatUntil=0;
+  unreadChatCount=0;
+  updateChatUnread();
   document.body.classList.remove('campus-started');
   moveStick.set(0, 0);
   $('#hud').hidden = true;

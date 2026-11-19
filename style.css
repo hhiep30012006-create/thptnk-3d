@@ -716,3 +716,28 @@ body.donate-open { overscroll-behavior: none; }
   #donateDialog header { padding: 4px 12px; }
   .donate-body { padding: 7px 12px 12px; }
 }
+
+/* HUD controls remain above the 3D canvas and accept both mouse and touch. */
+#hud { z-index: 6; pointer-events: auto; }
+#hud .pill { position: relative; z-index: 1; pointer-events: auto; }
+#campusPhoto { z-index: 8; }
+
+/* Chat notification counters. */
+.chat-unread { position: absolute; z-index: 2; display: grid; place-items: center; min-width: 18px; height: 18px; padding: 0 4px; border: 2px solid #24211d; border-radius: 999px; background: #ff3b30; color: #fff; font: 800 10px/1 system-ui; box-shadow: 0 2px 7px #0005; }
+.chat-unread[hidden] { display: none; }
+#chatToggle .chat-unread { top: -8px; right: -8px; }
+#mobileMenuItems [data-menu="chat"] { position: relative; }
+#mobileMenuChatUnread { top: -5px; right: -6px; border-color: #29251e; }
+
+/* CSS2D-style billboards projected from the players' heads. */
+.player-chat-bubble { position: absolute; z-index: 3; max-width: min(270px, 62vw); padding: 7px 10px; border: 1px solid #ffffffd9; border-radius: 11px; background: #fffdf7ed; color: #3a3028; font: 650 12px/1.35 system-ui; overflow-wrap: anywhere; box-shadow: 0 5px 16px #0004; transform: translate(-50%, -100%); pointer-events: none; transition: opacity .22s ease, transform .22s ease; }
+.player-chat-bubble::after { content: ""; position: absolute; top: 100%; left: 50%; width: 0; height: 0; border: 6px solid transparent; border-top: 7px solid #fffdf7ed; transform: translateX(-50%); }
+.player-chat-bubble.is-own { border-color: #ffe0a0; background: #fff2d8f2; }
+.player-chat-bubble.is-own::after { border-top-color: #fff2d8f2; }
+.player-chat-bubble[hidden] { display: none; }
+
+#mobileChatQuick { display: none; }
+@media (max-width: 720px) {
+  .mobile-campus #mobileChatQuick:not([hidden]) { display: grid; place-items: center; position: absolute; z-index: 8; top: calc(max(10px, env(safe-area-inset-top)) + 54px); right: max(11px, env(safe-area-inset-right)); width: 48px; height: 48px; padding: 0; border: 1px solid #ffe5a572; border-radius: 50%; background: #28241de8; color: #fff4d5; font: 650 21px system-ui; box-shadow: 0 4px 20px #0004; touch-action: manipulation; cursor: pointer; }
+  #mobileChatQuick .chat-unread { top: -5px; right: -5px; border-color: #28241d; }
+}

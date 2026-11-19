@@ -18,6 +18,7 @@ const cues = {
   door: { noise: .24, filter: 340, volume: .13, tones: [[150, 0, .22], [108, .17, .10]] },
   chalk: { noise: .37, filter: 1820, volume: .10 },
   shutter: { noise: .075, filter: 2400, volume: .18, tones: [[320, .075, .075]] },
+  chat: { tones: [[1318, 0, .15]], volume: .13 },
   warning: { tones: [[330, 0, .11], [275, .12, .14]], volume: .10 }
 };
 

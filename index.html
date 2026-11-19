@@ -18,7 +18,7 @@
     <div class="student"><b id="studentName"></b><span id="studentClass"></span></div>
     <div id="environmentStatus" class="environment-status" role="status" aria-live="polite">07:30 · Nắng sớm · 24°C</div>
     <button id="mapBtn" class="pill" type="button" aria-haspopup="dialog" aria-controls="campusMap">📍 Bản đồ <kbd>M</kbd></button>
-    <button id="chatToggle" class="pill" type="button" aria-expanded="false" aria-controls="chatPanel">💬 Chat <span id="onlineCount">0</span></button>
+    <button id="chatToggle" class="pill" type="button" aria-expanded="false" aria-controls="chatPanel">💬 Chat <span id="onlineCount">0</span><span id="chatUnread" class="chat-unread" aria-label="Tin nhắn chưa đọc" hidden>0</span></button>
     <button type="button" class="pill" data-day-cycle><span aria-hidden="true">☀️</span></button>
     <button id="musicMenu" class="pill" type="button" aria-label="Âm thanh">🎵</button>
     <button id="editBtn" class="pill" type="button">Đổi nhân vật</button>
@@ -70,11 +70,12 @@
     <div id="mobileMenuItems" hidden>
       <button type="button" data-menu="travel" aria-haspopup="dialog" aria-controls="campusMap">📍 <span>Bản đồ</span></button>
       <button type="button" data-menu="progress">☑ <span>Nhiệm vụ</span></button>
-      <button type="button" data-menu="chat">💬 <span>Chat</span></button>
+      <button type="button" data-menu="chat">💬 <span>Chat</span><span id="mobileMenuChatUnread" class="chat-unread" aria-label="Tin nhắn chưa đọc" hidden>0</span></button>
       <button type="button" data-day-cycle><span aria-hidden="true">☀️</span> <span>Ánh sáng</span></button>
       <button type="button" data-menu="music">🎵 <span>Nhạc nền</span></button>
     </div>
   </nav>
+  <button id="mobileChatQuick" type="button" aria-label="Mở chat" aria-expanded="false" aria-controls="chatPanel" hidden>💬<span id="mobileChatUnread" class="chat-unread" aria-label="Tin nhắn chưa đọc" hidden>0</span></button>
 
   <section id="intro" class="overlay">
     <form id="profileForm" class="card">
