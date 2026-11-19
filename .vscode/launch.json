@@ -1,0 +1,21 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Chạy thử THPT Nguyễn Khuyến 3D",
+      "type": "node",
+      "request": "launch",
+      "program": "${workspaceFolder}/server.js",
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "PORT": "3000"
+      },
+      "console": "internalConsole",
+      "serverReadyAction": {
+        "pattern": "(http://localhost:3000)",
+        "uriFormat": "%s",
+        "action": "openExternally"
+      }
+    }
+  ]
+}

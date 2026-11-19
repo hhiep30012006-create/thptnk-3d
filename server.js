@@ -6,12 +6,16 @@ const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
+const guestbook = require('./guestbook-store');
 const { randomUUID } = require('node:crypto');
 
 const ROOT = __dirname;
 const PORT = Number(process.env.PORT || 3000);
 const SERVER_STARTED_AT = Date.now();
 const clients = new Map();
+const classroomBoards = new Map();
+const UUID = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i;
+const textField = (value, limit) => typeof value === 'string' ? value.replace(/\s+/g, ' ').trim().slice(0, limit) : '';
 const clientsByRoom = new Map();
 const recentMessagesByRoom = new Map();
 const pendingChatByRoom = new Map();
@@ -33,6 +37,7 @@ const MIME_TYPES = {
   '.jpg': 'image/jpeg',
   '.jpeg': 'image/jpeg',
   '.svg': 'image/svg+xml',
+  '.webp': 'image/webp',
   '.mp3': 'audio/mpeg',
   '.ogg': 'audio/ogg',
   '.wav': 'audio/wav',
@@ -188,10 +193,12 @@ function cleanProfile(value) {
     name: String(profile.name || 'Học sinh').replace(/[<>\r\n]/g, '').trim().slice(0, 25) || 'Học sinh',
     className: String(profile.className || '').replace(/[<>\r\n]/g, '').trim().slice(0, 8),
     gender: profile.gender === 'girl' ? 'girl' : 'boy',
+    role: profile.role === 'alumni' ? 'alumni' : 'student',
+    year: Number.isInteger(Number(profile.year)) && Number(profile.year) >= 1961 && Number(profile.year) <= 2100 ? Number(profile.year) : null,
     outfit: {
       shirt: outfit.shirt === 'blue' ? 'blue' : 'white',
       tucked: outfit.tucked === 'no' ? 'no' : 'yes',
-      pants: outfit.pants === 'blue' ? 'blue' : 'black',
+      pants: profile.gender === 'girl' && ['skirt', 'aodai'].includes(outfit.pants) ? outfit.pants : 'black',
       bag: outfit.bag === 'backpack' ? 'backpack' : 'crossbody',
       footwear: outfit.footwear === 'slides' ? 'slides' : 'strap'
     }
@@ -204,7 +211,8 @@ function cleanPosition(value) {
     x: asNumber(position.x, 0, -250, 250),
     y: asNumber(position.y, 0, -10, 80),
     z: asNumber(position.z, 0, -250, 250),
-    yaw: asNumber(position.yaw, 0, -Math.PI * 20, Math.PI * 20)
+    yaw: asNumber(position.yaw, 0, -Math.PI * 20, Math.PI * 20),
+    prop: ['tea', 'soda', 'snack', 'bouquet'].includes(position.prop) ? position.prop : ''
   };
 }
 
@@ -218,7 +226,7 @@ async function readJson(request) {
 }
 
 function getClient(body) {
-  const id = String(body.id || '');
+  const id = typeof body?.id === 'string' ? body.id : '';
   return clients.get(id) || null;
 }
 
@@ -227,6 +235,16 @@ async function handleApi(request, response, url) {
     setCors(response);
     response.writeHead(204);
     response.end();
+    return;
+  }
+
+  if (request.method === 'GET' && url.pathname === '/api/guestbook') {
+    const voter = url.searchParams.get('voter') || '';
+    try {
+      sendJson(response, 200, { notes: await guestbook.list(UUID.test(voter) ? voter : '') });
+    } catch {
+      sendJson(response, 503, { error: 'Kho lưu bút chưa sẵn sàng. Hãy thử lại sau.' });
+    }
     return;
   }
 
@@ -250,6 +268,7 @@ async function handleApi(request, response, url) {
       players,
       messages: (recentMessagesByRoom.get(room) || []).slice(-30),
       serverTime: Date.now(),
+      classroomBoard: classroomBoards.get(room) || '',
       musicStartedAt: SERVER_STARTED_AT
     });
     return;
@@ -283,6 +302,7 @@ async function handleApi(request, response, url) {
       players,
       messages: (recentMessagesByRoom.get(room) || []).slice(-30),
       serverTime: Date.now(),
+      classroomBoard: classroomBoards.get(room) || '',
       musicStartedAt: SERVER_STARTED_AT
     });
     response.on('close', () => removeClient(client));
@@ -297,6 +317,48 @@ async function handleApi(request, response, url) {
   let body;
   try { body = await readJson(request); }
   catch (error) { sendJson(response, 400, { error: error.message || 'Dữ liệu không hợp lệ.' }); return; }
+
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    sendJson(response, 400, { error: 'Dữ liệu không hợp lệ.' });
+    return;
+  }
+
+  if (url.pathname === '/api/classroom/board' || url.pathname === '/api/guestbook' || url.pathname === '/api/guestbook/heart') {
+    const client = body && getClient(body);
+    if (!client?.joined) { sendJson(response, 403, { error: 'Hãy vào trường trước.' }); return; }
+    const now = Date.now();
+    if (now - (client.lastCampusWrite || 0) < 1200) {
+      sendJson(response, 429, { error: 'Hãy đợi một chút rồi thử lại.' });
+      return;
+    }
+    if (url.pathname === '/api/classroom/board') {
+      if (Math.abs(client.position.y - 30) > 4 || Math.abs(client.position.x + 11.54) > 6 || Math.abs(client.position.z + 77) > 7) {
+        sendJson(response, 403, { error: 'Hãy vào lớp để viết bảng.' });
+        return;
+      }
+      if (typeof body.text !== 'string') { sendJson(response, 400, { error: 'Nội dung bảng không hợp lệ.' }); return; }
+      const text = textField(body.text, 120);
+      client.lastCampusWrite = now;
+      classroomBoards.set(client.room, text);
+      broadcast(client.room, 'classroom-board', { text });
+      sendJson(response, 200, { text });
+      return;
+    }
+    const note = { name: textField(body.name, 48), classYear: textField(body.classYear, 48), message: textField(body.message, 280) };
+    const adding = url.pathname === '/api/guestbook';
+    if (adding ? !note.name || !note.classYear || !note.message : !UUID.test(body.noteId || '') || !UUID.test(body.voter || '')) {
+      sendJson(response, 400, { error: 'Thông tin lưu bút chưa hợp lệ.' });
+      return;
+    }
+    client.lastCampusWrite = now;
+    try {
+      const result = adding ? await guestbook.add(note) : await guestbook.heart(body.noteId, body.voter);
+      sendJson(response, result ? (adding ? 201 : 200) : 404, result ? { note: result } : { error: 'Không tìm thấy lời nhắn.' });
+    } catch {
+      sendJson(response, 503, { error: 'Không lưu được. Hãy thử lại sau.' });
+    }
+    return;
+  }
 
   if (url.pathname === '/api/join') {
     const client = getClient(body);
@@ -410,17 +472,60 @@ function serveStatic(request, response, pathname) {
   try { decoded = decodeURIComponent(pathname); }
   catch { response.writeHead(400); response.end('Bad request'); return; }
   if (decoded === '/') decoded = '/index.html';
+  if (decoded === '/nipplejs.js') {
+    const client = path.join(ROOT, 'node_modules', 'nipplejs', 'dist', 'nipplejs.js');
+    const stream = fs.createReadStream(client);
+    stream.on('error', () => { response.writeHead(404); response.end('Not found'); });
+    stream.once('open', () => {
+      response.writeHead(200, { 'Content-Type': MIME_TYPES['.js'] });
+      if (request.method === 'HEAD') { stream.destroy(); response.end(); } else stream.pipe(response);
+    });
+    return;
+  }
+  if (!/^\/(?:index\.html|app\.js|campus-activities\.js|campus-audio\.js|campus-flowers\.js|campus-secret\.js|campus-banner\.js|campus-traffic\.js|campus-map\.js|campus-parking\.js|campus-horse-dialog\.js|campus-morning-light\.js|style\.css|assets\/[^/\\]+)$/.test(decoded)) {
+    response.writeHead(404); response.end('Not found'); return;
+  }
   const fullPath = path.resolve(ROOT, `.${decoded}`);
   const relative = path.relative(ROOT, fullPath);
   if (relative.startsWith('..') || path.isAbsolute(relative)) {
     response.writeHead(403); response.end('Forbidden'); return;
   }
   fs.stat(fullPath, (error, stats) => {
-    if (error || !stats.isFile()) { response.writeHead(404); response.end('Not found'); return; }
+    if (error || !stats.isFile()) {
+      if (request.method === 'HEAD' && decoded.startsWith('/assets/')
+        && request.headers['x-campus-optional-asset'] === '1' && (!error || ['ENOENT', 'ENOTDIR'].includes(error.code))) {
+        response.writeHead(204, { 'Cache-Control': 'no-store' });
+        response.end();
+      } else {
+        response.writeHead(404);
+        response.end('Not found');
+      }
+      return;
+    }
     const type = MIME_TYPES[path.extname(fullPath).toLowerCase()] || 'application/octet-stream';
-    response.writeHead(200, { 'Content-Type': type, 'Cache-Control': 'no-cache' });
+    const headers = { 'Content-Type': type, 'Cache-Control': 'no-cache', 'Content-Length': stats.size };
+    let range;
+    if (type === 'audio/mpeg') {
+      headers['Accept-Ranges'] = 'bytes';
+      const raw = request.headers.range;
+      if (raw) {
+        const parts = /^bytes=(\d*)-(\d*)$/.exec(raw);
+        const start = parts?.[1] ? Number(parts[1]) : Math.max(0, stats.size - Number(parts?.[2]));
+        const end = parts?.[1] && parts[2] ? Math.min(stats.size - 1, Number(parts[2])) : stats.size - 1;
+        if (!parts || (!parts[1] && !parts[2]) || !Number.isSafeInteger(start) || !Number.isSafeInteger(end)
+            || start >= stats.size || start > end) {
+          response.writeHead(416, { 'Content-Range': 'bytes */' + stats.size });
+          response.end();
+          return;
+        }
+        range = { start, end };
+        headers['Content-Range'] = 'bytes ' + start + '-' + end + '/' + stats.size;
+        headers['Content-Length'] = end - start + 1;
+      }
+    }
+    response.writeHead(range ? 206 : 200, headers);
     if (request.method === 'HEAD') { response.end(); return; }
-    fs.createReadStream(fullPath).pipe(response);
+    fs.createReadStream(fullPath, range).pipe(response);
   });
 }
 

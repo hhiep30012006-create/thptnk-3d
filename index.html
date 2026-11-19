@@ -2,7 +2,7 @@
 <html lang="vi">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
   <meta name="theme-color" content="#8e2a22">
   <title>THPT Nguyễn Khuyến · Tham quan 3D</title>
   <link rel="stylesheet" href="style.css">
@@ -16,9 +16,11 @@
   <header id="hud" hidden>
     <div class="brand"><strong>THPT Nguyễn Khuyến</strong><span>Tham quan sân trường 3D</span></div>
     <div class="student"><b id="studentName"></b><span id="studentClass"></span></div>
-    <div id="environmentStatus" class="environment-status" role="status" aria-live="polite">🕒 Đang cập nhật giờ và thời tiết…</div>
-    <button id="mapBtn" class="pill" type="button">🗺 Bản đồ <kbd>M</kbd></button>
+    <div id="environmentStatus" class="environment-status" role="status" aria-live="polite">07:30 · Nắng sớm · 24°C</div>
+    <button id="mapBtn" class="pill" type="button" aria-haspopup="dialog" aria-controls="campusMap">📍 Bản đồ <kbd>M</kbd></button>
     <button id="chatToggle" class="pill" type="button" aria-expanded="false" aria-controls="chatPanel">💬 Chat <span id="onlineCount">0</span></button>
+    <button type="button" class="pill" data-day-cycle><span aria-hidden="true">☀️</span></button>
+    <button id="musicMenu" class="pill" type="button" aria-label="Âm thanh">🎵</button>
     <button id="editBtn" class="pill" type="button">Đổi nhân vật</button>
   </header>
 
@@ -28,7 +30,31 @@
     <form id="chatForm" autocomplete="off"><input id="chatInput" maxlength="240" placeholder="Nhắn cho mọi người…" aria-label="Tin nhắn"><button type="submit">Gửi</button></form>
   </aside>
 
-  <canvas id="minimap" width="220" height="160" hidden aria-label="Bản đồ khuôn viên"></canvas>
+  <div id="locationBanner" hidden>
+    <span aria-hidden="true">📍</span>
+    <span id="locationNames" aria-hidden="true"><span class="location-current"></span></span>
+    <span id="locationStatus" class="map-sr-only" role="status"></span>
+  </div>
+  <dialog id="campusMap" aria-labelledby="campusMapTitle">
+    <header class="map-header">
+      <h2 id="campusMapTitle">Sơ đồ trường</h2>
+      <button id="campusMapClose" type="button" aria-label="Đóng bản đồ" autofocus>×</button>
+    </header>
+    <div class="map-layout">
+      <div id="campusMapBoard">
+        <img src="assets/campus-map.svg" alt="Sơ đồ 2D khuôn viên trường THPT Nguyễn Khuyến" decoding="async">
+        <div id="mapPlayerPin"><span class="map-pin-tip" aria-hidden="true"></span><span class="map-pin-label">Bạn đang ở đây</span></div>
+      </div>
+      <aside class="map-sidebar" aria-label="Chú giải bản đồ">
+        <h3>Dịch chuyển nhanh</h3>
+        <div id="mapZoneList"></div>
+        <p id="mapMessage" role="status"></p>
+        <h3>Nhân vật</h3>
+        <div id="mapNpcList"></div>
+      </aside>
+    </div>
+  </dialog>
+  <div id="mapTeleportFade" aria-hidden="true"></div>
   <div id="loading" role="status">Đang tải mô hình trường… <span id="loadPct"></span></div>
   <div id="toast" hidden></div>
   <div id="npcSpeech" class="npc-speech" role="status" aria-live="polite" hidden></div>
@@ -37,12 +63,17 @@
   <footer id="help" hidden>
     <span><kbd>W A S D</kbd> đi</span><span><kbd>Shift</kbd> chạy</span><span><kbd>Space</kbd> nhảy</span>
     <span>Kéo chuột để xoay góc nhìn</span><span><kbd>M</kbd> bản đồ</span>
-    <span class="mobile-note">Điều khiển chạm: dùng các nút mũi tên</span>
   </footer>
-  <nav id="touchControls" aria-label="Điều khiển cảm ứng" hidden>
-    <button data-key="KeyW" aria-label="Đi tới">▲</button>
-    <div><button data-key="KeyA" aria-label="Sang trái">◀</button><button data-key="KeyS" aria-label="Đi lùi">▼</button><button data-key="KeyD" aria-label="Sang phải">▶</button></div>
-    <div><button data-key="ShiftLeft" aria-label="Chạy">Chạy</button><button data-key="Space" aria-label="Nhảy">Nhảy</button></div>
+  <div id="mobileMoveZone" aria-hidden="true" hidden></div>
+  <nav id="mobileMenu" aria-label="Điều khiển chuyến tham quan" hidden>
+    <button id="mobileMenuToggle" type="button" aria-label="Menu" aria-expanded="false" aria-controls="mobileMenuItems">☰</button>
+    <div id="mobileMenuItems" hidden>
+      <button type="button" data-menu="travel" aria-haspopup="dialog" aria-controls="campusMap">📍 <span>Bản đồ</span></button>
+      <button type="button" data-menu="progress">☑ <span>Nhiệm vụ</span></button>
+      <button type="button" data-menu="chat">💬 <span>Chat</span></button>
+      <button type="button" data-day-cycle><span aria-hidden="true">☀️</span> <span>Ánh sáng</span></button>
+      <button type="button" data-menu="music">🎵 <span>Nhạc nền</span></button>
+    </div>
   </nav>
 
   <section id="intro" class="overlay">
@@ -94,6 +125,7 @@
         </div>
       </div>
       <div class="fields">
+        <label>Vai trò<select id="visitorRole"><option value="student">Học sinh</option><option value="alumni">Cựu học sinh</option></select></label>
         <label>Họ và tên<input id="name" maxlength="25" autocomplete="name" required placeholder="Ví dụ: Nguyễn Văn An"></label>
         <div class="row">
           <label>Lớp<input id="className" maxlength="8" required placeholder="Ví dụ: 12A1"></label>
@@ -105,20 +137,85 @@
         </div>
         <div class="row">
           <label>Sơ vin<select id="tucked"><option value="yes" selected>Có</option><option value="no">Không</option></select></label>
-          <label>Quần<select id="pants"><option value="black" selected>Đen</option><option value="blue">Màu khác</option></select></label>
+          <label>Quần / Váy<select id="pants"><option value="black" selected>Quần đen</option><option value="skirt" data-girl>Chân váy đen</option><option value="aodai" data-girl>Áo dài trắng</option><option value="blue">Màu khác</option></select></label>
         </div>
         <div class="row">
           <label>Cặp sách<select id="bag"><option value="crossbody" selected>Cặp chéo</option><option value="backpack">Ba lô</option></select></label>
           <label>Dép<select id="footwear"><option value="strap" selected>Dép quai hậu</option><option value="slides">Dép lê</option></select></label>
         </div>
       </div>
+      <label class="secret-choice">Nhiệm vụ ẩn (Khám phá bí mật)
+        <select id="secretMode" aria-describedby="secretHint">
+          <option value="no" selected>Không nhận</option>
+          <option value="yes">Có nhận</option>
+        </select>
+      </label>
+      <p id="secretHint" hidden>Chế độ tinh nghịch: Hãy để ý Bác Bảo Vệ ở cổng trường và hỏi thăm Bùi Quốc Hiệp 06 nhé!</p>
       <p class="uniform-rule">Đồng phục được duyệt: sơ mi trắng, sơ vin, quần đen, cặp chéo và dép quai hậu.</p>
       <p id="formError" class="error" role="alert" aria-live="assertive" hidden></p>
       <button id="startBtn" class="primary" type="submit">Vào trường</button>
-      <p class="privacy">Tên, lớp và vị trí nhân vật sẽ hiển thị với người cùng tham quan phòng này.</p>
+      <p class="privacy">Tên, lớp, niên khóa và vị trí nhân vật sẽ hiển thị với người cùng tham quan phòng này.</p>
     </form>
   </section>
 
+  <output id="flowerQuest" aria-label="Tiến độ thu thập hoa" aria-live="polite" hidden></output>
+  <div id="campusActions" hidden>
+    <button type="button" class="pill"></button>
+    <button type="button" class="pill" id="campusSecondary" hidden>Dâng hoa</button>
+  </div>
+  <button type="button" class="pill" id="campusPhoto" disabled hidden title="Chụp ảnh nhóm (P)">📷 <span>Ảnh nhóm</span></button>
+  <button type="button" class="pill" id="campusStand" hidden>Đứng dậy</button>
+  <aside id="tributeBiography" hidden aria-live="polite">
+    <strong>Nguyễn Khuyến (1835–1909)</strong>
+    <p>Nhà thơ quê làng Yên Đổ, Hà Nam, được gọi là Tam Nguyên Yên Đổ vì đỗ đầu cả ba kỳ thi. Ông để lại chùm thơ thu nổi tiếng gồm <em>Thu vịnh</em>, <em>Thu điếu</em> và <em>Thu ẩm</em>.</p>
+    <a target="_blank" rel="noopener" href="https://baotangtinh.ninhbinh.gov.vn/nghien-cuu/tu-duong-nguyen-khuyen-%E2%80%93-noi-luu-giu-dau-an-cuoc-doi-va-su-nghiep-tam-nguyen-yen-do.htm">Bảo tàng tỉnh Ninh Bình</a>
+  </aside>
+  <section id="gateHorseDialogue" role="dialog" aria-labelledby="gateHorseHeading" hidden>
+    <header>
+      <h2 id="gateHorseHeading">Bùi Quốc Hiệp 06</h2>
+      <button type="button" class="horse-close" aria-label="Đóng hội thoại">×</button>
+    </header>
+    <p id="gateHorseLine" aria-live="polite"></p>
+    <div class="horse-options">
+      <button type="button" id="gateHorseSecret">Hỏi bí mật cổng trường</button>
+      <button type="button" id="gateHorseBoast">Nghe một câu bá khí</button>
+      <button type="button" id="gateHorseDonate">☕ Ủng hộ Admin (Donate)</button>
+    </div>
+  </section>
+  <span id="gateHorseEmote" aria-hidden="true" hidden></span>
+  <dialog id="donateDialog" aria-labelledby="donateTitle">
+    <article class="donate-card">
+      <header>
+        <h2 id="donateTitle">☕ Ủng hộ Admin</h2>
+        <button type="button" class="donate-close" autofocus>✕ Đóng</button>
+      </header>
+      <div class="donate-body">
+        <div class="donate-qr-frame">
+          <img id="donateQr" alt="Mã VietQR để chuyển khoản ủng hộ" decoding="async" hidden>
+          <p id="donateQrPlaceholder">Đang cập nhật mã QR</p>
+        </div>
+        <div class="donate-account">
+          <p id="donateBankRow"><span>Ngân hàng</span><strong id="donateBank"></strong></p>
+          <p><span>Chủ tài khoản</span><strong id="donateAccountName"></strong></p>
+          <div class="donate-copy-row">
+            <div><span>Số tài khoản</span><strong id="donateAccountNumber"></strong></div>
+            <button type="button" id="copyDonateAccount">📋 Sao chép STK</button>
+          </div>
+          <div class="donate-copy-row">
+            <div><span>Nội dung chuyển khoản gợi ý</span><strong id="donateTransferNote"></strong></div>
+            <button type="button" id="copyDonateNote">Sao chép nội dung</button>
+          </div>
+        </div>
+        <p id="donateThanks"></p>
+        <p id="donateStatus" class="donate-status" role="status"></p>
+      </div>
+    </article>
+  </dialog>
+  <dialog id="campusDialog" aria-labelledby="campusDialogTitle">
+    <header><h2 id="campusDialogTitle"></h2><button class="campus-close" type="button" aria-label="Đóng">×</button></header>
+    <div class="campus-dialog-content"></div>
+  </dialog>
+  <script src="nipplejs.js"></script>
   <script type="module" src="app.js"></script>
 </body>
 </html>
