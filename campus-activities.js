@@ -43,7 +43,6 @@ export function createCampusActivities({ scene, camera, renderer, walker, keys, 
   let progress = {};
   try { progress = JSON.parse(localStorage.getItem('nk-campus-missions') || '{}') || {}; } catch {}
   let nextProximity = 0;
-  let canPhoto = false;
   let boardSign;
   let nextGuestbookRead = 0;
   const doors = [];
@@ -97,6 +96,7 @@ export function createCampusActivities({ scene, camera, renderer, walker, keys, 
     sound.setMemory(Boolean(seated || captured));
     if (photoUrl) URL.revokeObjectURL(photoUrl);
     photoUrl = undefined;
+    document.body.classList.remove('campus-photo-open');
     keys.clear();
   });
   stand.onclick = leaveSeat;
@@ -606,28 +606,77 @@ export function createCampusActivities({ scene, camera, renderer, walker, keys, 
     return card;
   }
 
-  function photoAvailable() {
+  function captureAllowed() {
+    return active && getPlayer() && !indoors && !ceremony && !dialog.open
+      && !horseDialogue.talking && !flowers.giving && !secret.climbing && (!seated || seated.parking);
+  }
+
+  function groupMembers() {
     const connection = getRoom();
-    return active && Boolean(connection.id) && !indoors && !seated && !ceremony
-      && zones.some(zone => distance(zone, walker) <= 5 && Math.abs(zone.y - walker.y) <= 2.7
-        && [...connection.players.values()].some(player => distance(zone, player.target) <= 5 && distance(walker, player.target) <= 5
-          && Math.abs(walker.y - player.target.y) <= 2.7));
+    const zone = zones.find(zone => distance(zone, walker) <= 5 && Math.abs(zone.y - walker.y) <= 2.7);
+    if (!connection.id || !zone) return [];
+    return [...connection.players.values()].filter(player => distance(zone, player.target) <= 5
+      && distance(walker, player.target) <= 5 && Math.abs(walker.y - player.target.y) <= 2.7);
+  }
+
+  function framePortrait(player, members) {
+    const center = player.position.clone();
+    const subject = player.position.clone().add(vector(0, 1.1, 0));
+    let span = 0;
+    for (const member of members) {
+      center.add(member.root.position);
+      span = Math.max(span, distance(player.position, member.root.position));
+    }
+    center.divideScalar(members.length + 1).add(vector(0, 1.1, 0));
+    const aspect = Math.min(1, camera.aspect);
+    const distanceFromGroup = Math.max(4, (span + 2.4) / (1.1 * aspect));
+    const direction = vector(0, 0, 0);
+    const eye = vector(0, 0, 0);
+    const probe = vector(0, 0, 0);
+    for (const turn of [0, -.45, .45, -.9, .9]) {
+      const yaw = walker.yaw + turn;
+      direction.set(-Math.sin(yaw), 0, -Math.cos(yaw));
+      eye.copy(center).addScaledVector(direction, distanceFromGroup);
+      eye.y += .88;
+      let clear = true;
+      for (let t = .18; t <= 1; t += .16) {
+        probe.lerpVectors(subject, eye, t);
+        if (!outdoorOpen(probe)) { clear = false; break; }
+      }
+      if (!clear) continue;
+      camera.position.copy(eye);
+      camera.lookAt(center);
+      return;
+    }
+    // Tight spaces use the existing camera position with the group re-centered.
+    camera.lookAt(center);
   }
 
   async function takePhoto() {
     const parkingPhoto = Boolean(seated?.parking);
-    if (captured || (!parkingPhoto && !photoAvailable()) || dialog.open || flowers.giving || secret.climbing) return;
+    if (captured || !captureAllowed()) return;
+    const members = parkingPhoto ? [] : groupMembers();
+    const groupPhoto = members.length > 0;
     captured = true;
+    resetInput();
     sound.setMemory(true);
     document.body.classList.add('campus-capture');
     try {
       await new Promise(resolve => requestAnimationFrame(resolve));
-      if (parkingPhoto ? !seated?.parking : !photoAvailable()) {
-        throw new Error(parkingPhoto ? 'Hãy ngồi lên xe rồi thử chụp lại.' : 'Các bạn hãy đứng gần nhau thêm một chút.');
+      if (!captureAllowed()) return;
+      const savedPosition = camera.position.clone();
+      const savedRotation = camera.quaternion.clone();
+      let source;
+      try {
+        if (!parkingPhoto) framePortrait(getPlayer(), members);
+        renderer.render(scene, camera);
+        source = renderer.domElement.toDataURL('image/png');
+      } finally {
+        camera.position.copy(savedPosition);
+        camera.quaternion.copy(savedRotation);
+        camera.updateMatrixWorld();
       }
-      renderer.render(scene, camera);
       sound.effect('shutter');
-      const source = renderer.domElement.toDataURL('image/png');
       const image = new Image();
       image.src = source;
       await image.decode();
@@ -636,13 +685,20 @@ export function createCampusActivities({ scene, camera, renderer, walker, keys, 
       canvas.height = image.naturalHeight;
       const ctx = canvas.getContext('2d');
       ctx.drawImage(image, 0, 0);
+      const edge = Math.max(4, Math.round(Math.min(canvas.width, canvas.height) * .018));
+      ctx.strokeStyle = '#fff6dc';
+      ctx.lineWidth = edge;
+      ctx.strokeRect(edge / 2, edge / 2, canvas.width - edge, canvas.height - edge);
+      ctx.strokeStyle = '#b08944';
+      ctx.lineWidth = Math.max(1, edge * .15);
+      ctx.strokeRect(edge * 1.35, edge * 1.35, canvas.width - edge * 2.7, canvas.height - edge * 2.7);
       const date = new Intl.DateTimeFormat('vi-VN', { day: '2-digit', month: '2-digit', year: 'numeric' }).format(new Date());
       const mark = 'Kỷ niệm THPT Nguyễn Khuyến - ' + date;
       const size = Math.max(11, Math.min(32, Math.floor(canvas.width / 36)));
       ctx.font = '600 ' + size + 'px system-ui';
       ctx.textAlign = 'right';
       ctx.textBaseline = 'bottom';
-      const margin = size * .8;
+      const margin = Math.max(size * .8, edge * 1.8);
       const width = ctx.measureText(mark).width;
       ctx.fillStyle = '#1c1915b8';
       ctx.fillRect(canvas.width - width - margin * 2, canvas.height - size - margin * 2, width + margin * 2, size + margin * 2);
@@ -650,18 +706,32 @@ export function createCampusActivities({ scene, camera, renderer, walker, keys, 
       ctx.fillText(mark, canvas.width - margin, canvas.height - margin);
       const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
       if (!blob) throw new Error('Không tạo được ảnh PNG.');
-      openDialog(parkingPhoto ? 'Ảnh nhà xe' : 'Ảnh nhóm');
+      openDialog(parkingPhoto ? 'Ảnh nhà xe' : groupPhoto ? 'Ảnh nhóm' : 'Ảnh kỷ niệm');
+      document.body.classList.add('campus-photo-open');
       photoUrl = URL.createObjectURL(blob);
       const preview = document.createElement('img');
       preview.src = photoUrl;
-      preview.alt = parkingPhoto ? 'Ảnh kỷ niệm nhà xe học sinh' : 'Ảnh nhóm trong sân trường';
+      preview.alt = parkingPhoto ? 'Ảnh kỷ niệm nhà xe học sinh' : groupPhoto ? 'Ảnh nhóm trong sân trường' : 'Ảnh kỷ niệm trong sân trường';
       const download = document.createElement('a');
       download.className = 'campus-download';
       download.href = photoUrl;
       download.download = 'ky-niem-thpt-nguyen-khuyen-' + date.replaceAll('/', '-') + '.png';
       download.textContent = 'Tải ảnh PNG';
       content.append(preview, download);
-      if (!parkingPhoto) complete('photo');
+      if (mobile && navigator.canShare) {
+        const file = new File([blob], download.download, { type: 'image/png' });
+        if (navigator.canShare({ files: [file] })) {
+          const share = document.createElement('button');
+          share.type = 'button';
+          share.className = 'campus-download';
+          share.textContent = 'Chia sẻ hoặc lưu ảnh';
+          share.onclick = () => navigator.share({ files: [file] }).catch(error => {
+            if (error.name !== 'AbortError') notice('Dùng nút Tải ảnh PNG để lưu ảnh.');
+          });
+          content.append(share);
+        }
+      }
+      if (groupPhoto) complete('photo');
     } catch (error) {
       notice(error.message || 'Không chụp được ảnh.');
     } finally {
@@ -672,7 +742,7 @@ export function createCampusActivities({ scene, camera, renderer, walker, keys, 
   }
 
   function handleKey(event) {
-    if (dialog.open || horseDialogue.modalOpen || flowers.giving || secret.climbing) return true;
+    if (captured || dialog.open || horseDialogue.modalOpen || flowers.giving || secret.climbing) return true;
     if (horseDialogue.optionsOpen) {
       if (event.code === 'Escape') {
         horseDialogue.dismiss();
@@ -692,7 +762,7 @@ export function createCampusActivities({ scene, camera, renderer, walker, keys, 
     if (ceremony) return true;
     if (event.repeat) return false;
     if (event.code === 'Enter' && nearby?.alternate && nearby.alternateReady?.()) { nearby.alternate(); return true; }
-    if (event.code === 'KeyP' && canPhoto) { void takePhoto(); return true; }
+    if (event.code === 'KeyP' && captureAllowed()) { void takePhoto(); return true; }
     if (nearby && inReach(nearby) && event.code === nearby.key) { nearby.activate(); return true; }
     return false;
   }
@@ -809,12 +879,10 @@ export function createCampusActivities({ scene, camera, renderer, walker, keys, 
           }
         }
       }
-      canPhoto = photoAvailable();
       if (boardSign && !indoors && distance(boardSign.position, walker) < 12 && now >= nextGuestbookRead) refreshGuestbookBoard();
     }
     const actionable = Boolean(nearby) && !seated && !ceremony && !dialog.open && !horseDialogue.talking && !flowers.giving && !secret.climbing;
-    const preferAction = actionable && nearby.preferAction;
-    prompt.hidden = !actionable || (mobile && canPhoto && !preferAction);
+    prompt.hidden = !actionable;
     if (actionable) {
       const label = typeof nearby.label === 'function' ? nearby.label() : nearby.label;
       const caption = mobile ? (nearby.icon || '↵') : label;
@@ -832,11 +900,9 @@ export function createCampusActivities({ scene, camera, renderer, walker, keys, 
       photoCaption.textContent = photoText;
       photo.setAttribute('aria-label', photoText);
     }
-    photo.hidden = !started || indoors || horseDialogue.talking || flowers.giving || secret.climbing || Boolean(ceremony)
-      || (!parkingPhoto && (Boolean(seated) || (mobile && (!canPhoto || preferAction))));
-    photo.disabled = captured || (!parkingPhoto && !canPhoto);
-    photo.title = parkingPhoto ? 'Chụp ảnh nhà xe (P)'
-      : photo.disabled ? 'Cần hai người trong vòng 5 m tại cổng trường hoặc bờ hồ.' : 'Chụp ảnh nhóm (P)';
+    photo.hidden = !started || !captureAllowed();
+    photo.disabled = captured;
+    photo.title = parkingPhoto ? 'Chụp ảnh nhà xe (P)' : 'Chụp ảnh (P)';
   }
 
   function showEmote(owner, tile) {
@@ -1031,7 +1097,7 @@ export function createCampusActivities({ scene, camera, renderer, walker, keys, 
     registerSecretGuard: secret.registerGuard, registerSecretVendor: secret.registerVendor,
     revealSecretClue: secret.revealClue, secretProfileChanged: secret.profileChanged,
     get trafficWarningActive() { return secret.trafficWarningActive; },
-    get blocksMovement() { return Boolean(seated || ceremony || dialog.open || horseDialogue.modalOpen || flowers.giving || secret.climbing); },
+    get blocksMovement() { return Boolean(captured || seated || ceremony || dialog.open || horseDialogue.modalOpen || flowers.giving || secret.climbing); },
     get chilling() { return Boolean(seated); },
     get activeIncenseLights() { return activeIncenseLights; },
     get insideClassroom() { return indoors; },

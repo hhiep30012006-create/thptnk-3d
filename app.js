@@ -2620,6 +2620,7 @@ $('#profileForm').addEventListener('submit', event => {
   $('#hud').hidden = false;
   $('#help').hidden = false;
   $('#mobileMoveZone').hidden = !mobile;
+  $('#campusJump').hidden = !mobile;
   $('#mobileMenu').hidden = !mobile;
   document.body.classList.add('campus-started');
   avatar.position.set(walker.x, walker.y, walker.z);
@@ -2657,6 +2658,7 @@ $('#editBtn').addEventListener('click', () => {
   $('#intro').hidden = false;
   $('#help').hidden = true;
   $('#mobileMoveZone').hidden = true;
+  $('#campusJump').hidden = true;
   $('#mobileMenu').hidden = true;
   document.body.classList.remove('campus-started');
   moveStick.set(0, 0);
@@ -2682,6 +2684,12 @@ window.addEventListener('keydown', event => {
     event.preventDefault();
   }
 });
+const jumpButton = $('#campusJump');
+jumpButton.addEventListener('touchstart', event => {
+  event.preventDefault();
+  jumpPlayer();
+}, { passive: false });
+jumpButton.addEventListener('click', jumpPlayer);
 window.addEventListener('keyup', event => keys.delete(event.code));
 window.addEventListener('blur', () => { keys.clear(); moveStick.set(0, 0); });
 
