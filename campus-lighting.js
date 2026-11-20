@@ -1,15 +1,42 @@
+export const FORCE_CLEAR_SKY_DAYTIME = true;
 export const LIGHTING_FADE_MS = 45_000;
+
+// +X is east in the campus map. The normalized direction is about 39° above the yard.
+export const CLEAR_SUMMER_MORNING = {
+  direction: [.74, .62, .24], sky: 0x92d3ff, horizon: 0xa9e3ff, zenith: 0x2a83e3,
+  sun: 0xffe09e, fog: 0xfff6e6, fogDensity: .00085, ambient: 0xcfe8ff, ground: 0xc88c69,
+  power: 2.55, fill: .74, ambientFill: .18, exposure: 1.15, clouds: .12, clearSky: 1
+};
+
+export const CLEAR_DAY_SHADOWS = {
+  desktopSize: 2048, mobileSize: 1024, weakSize: 512,
+  desktopHalfSpan: 27, mobileHalfSpan: 21, normalBias: .028, bias: -.00014, radius: 1.1,
+  desktopInterval: .13, mobileInterval: .22, casterDistance: 65, lookAhead: 4
+};
+
+export const BASE_SHADOWS = { desktopSize: 1024, mobileSize: 512, x: 23, y: 22, normalBias: .04, bias: -.0003, radius: 2.2 };
+
 export const LIGHTING_PRESETS = [
   { label: 'Ban ngày', direction: [-.39, .766, .52], sky: 0xddf0ff, horizon: 0xf7fbff, zenith: 0xa9d6fa,
     sun: 0xfff8e8, fog: 0xddf0ff, fogDensity: .0024, ambient: 0xfff8ec, ground: 0xddd6c8,
-    power: 2.1, duskPower: 0, fill: 1.13, exposure: 1.18, morning: 1, night: 0, sunset: 0, lamps: 0, clouds: .14 },
+    power: 2.1, duskPower: 0, fill: 1.13, ambientFill: .55, exposure: 1.18, morning: 1, night: 0, sunset: 0, lamps: 0, clouds: .14, clearSky: 0 },
   { label: 'Hoàng hôn', direction: [-.73, .19, -.65], sky: 0xe99980, horizon: 0xffb476, zenith: 0xd890b5,
     sun: 0xffa65b, fog: 0xe9a18b, fogDensity: .0024, ambient: 0xffdbc5, ground: 0xa67d82,
-    power: 1.15, duskPower: .12, fill: .78, exposure: 1.12, morning: 0, night: 0, sunset: 1, lamps: .32, clouds: .24 },
+    power: 1.15, duskPower: .12, fill: .78, ambientFill: 0, exposure: 1.12, morning: 0, night: 0, sunset: 1, lamps: .32, clouds: .24, clearSky: 0 },
   { label: 'Ban đêm', direction: [.32, .48, -.81], sky: 0x081329, horizon: 0x101b37, zenith: 0x060e22,
     sun: 0xa9c3ff, fog: 0x081329, fogDensity: .0021, ambient: 0x9db8ed, ground: 0x475776,
-    power: .48, duskPower: 0, fill: .36, exposure: 1.08, morning: 0, night: 1, sunset: 0, lamps: 1, clouds: .05 }
+    power: .48, duskPower: 0, fill: .36, ambientFill: 0, exposure: 1.08, morning: 0, night: 1, sunset: 0, lamps: 1, clouds: .05, clearSky: 0 }
 ];
+
+export function visualPresets(forceClear = FORCE_CLEAR_SKY_DAYTIME) {
+  return forceClear ? [{ ...LIGHTING_PRESETS[0], ...CLEAR_SUMMER_MORNING }, ...LIGHTING_PRESETS.slice(1)] : LIGHTING_PRESETS;
+}
+
+// Only the opt-out daytime look reads cloud cover; the HUD reads weather independently.
+export function daytimeOvercast(cloudCover, daylightWeight, forceClear = FORCE_CLEAR_SKY_DAYTIME) {
+  if (forceClear || !Number.isFinite(cloudCover)) return 0;
+  return Math.max(0, Math.min(1, (cloudCover - 20) / 80)) * daylightWeight;
+}
 
 const DAY_START = 6 * 60;
 const SUNSET_START = 16 * 60 + 1;

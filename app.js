@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { createCampusActivities, createCampusProp } from './campus-activities.js';
 import { setDeskPose } from './campus-classrooms.js';
-import { LightingController, LIGHTING_PRESETS, formatLocalClock } from './campus-lighting.js';
+import { LightingController, BASE_SHADOWS, CLEAR_DAY_SHADOWS, CLEAR_SUMMER_MORNING, daytimeOvercast, visualPresets, formatLocalClock } from './campus-lighting.js';
 import { createPresencePanel, PRESENCE_HEARTBEAT_MS, PRESENCE_IDLE_MS } from './campus-presence.js';
 import { createCampusSound } from './campus-audio.js';
 import { createFlowerBouquet } from './campus-flowers.js';
@@ -36,9 +36,11 @@ const camera = new THREE.PerspectiveCamera(58, innerWidth / innerHeight, 0.1, 90
 const renderer = new THREE.WebGLRenderer({ antialias: !mobile, powerPreference: 'high-performance' });
 updateRenderResolution();
 renderer.setSize(innerWidth, innerHeight);
-renderer.shadowMap.type = mobile ? THREE.PCFSoftShadowMap : THREE.PCFShadowMap;
+const baseShadowFilter = mobile ? THREE.PCFSoftShadowMap : THREE.PCFShadowMap;
+renderer.shadowMap.type = baseShadowFilter;
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.autoUpdate = false;
+renderer.shadowMap.needsUpdate = true;
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 1.05;
@@ -78,12 +80,19 @@ const ambientLight = new THREE.AmbientLight(0xffffff, .55);
 const sun = new THREE.DirectionalLight(0xfff9ed, 2.2);
 const duskFill = new THREE.DirectionalLight(0xffa458, 0);
 sun.castShadow = true;
-sun.shadow.mapSize.setScalar(mobile ? 512 : 1024);
-Object.assign(sun.shadow.camera, { left: -23, right: 23, top: 22, bottom: -22, near: .5, far: 128 });
+const baseShadowSize = mobile ? BASE_SHADOWS.mobileSize : BASE_SHADOWS.desktopSize;
+const limitedHardware = (navigator.deviceMemory > 0 && navigator.deviceMemory < 4)
+  || (navigator.hardwareConcurrency > 0 && navigator.hardwareConcurrency <= 4);
+const clearShadowSize = Math.min(renderer.capabilities.maxTextureSize,
+  mobile ? (limitedHardware ? CLEAR_DAY_SHADOWS.weakSize : CLEAR_DAY_SHADOWS.mobileSize)
+    : (limitedHardware ? BASE_SHADOWS.desktopSize : CLEAR_DAY_SHADOWS.desktopSize));
+const clearShadowSpan = mobile ? CLEAR_DAY_SHADOWS.mobileHalfSpan : CLEAR_DAY_SHADOWS.desktopHalfSpan;
+sun.shadow.mapSize.setScalar(baseShadowSize);
+Object.assign(sun.shadow.camera, { left: -BASE_SHADOWS.x, right: BASE_SHADOWS.x, top: BASE_SHADOWS.y, bottom: -BASE_SHADOWS.y, near: .5, far: 128 });
 sun.shadow.camera.updateProjectionMatrix();
-sun.shadow.normalBias = .04;
-sun.shadow.bias = -.0003;
-sun.shadow.radius = 2.2;
+sun.shadow.normalBias = BASE_SHADOWS.normalBias;
+sun.shadow.bias = BASE_SHADOWS.bias;
+sun.shadow.radius = BASE_SHADOWS.radius;
 scene.add(hemisphereLight, ambientLight, sun, sun.target, duskFill);
 const treeShadowLimit = mobile ? 8 : 15;
 const treeShadowAnchors = [];
@@ -101,6 +110,10 @@ for (const mesh of [crownShadows, trunkShadows, characterShadows]) {
   scene.add(mesh);
 }
 const shadowTransform = new THREE.Object3D();
+const clearDayCasters = [];
+const shadowSide = new THREE.Vector3();
+const shadowUp = new THREE.Vector3();
+const worldUp = new THREE.Vector3(0, 1, 0);
 
 // Atmospheric sky dome, a visible sun, and soft procedural cloud clusters.
 const skyDome = new Sky();
@@ -206,6 +219,7 @@ let exteriorLightBudget = () => campusLampLights.length;
 const glowingLampMaterials=[];
 
 const cloudClusters = [];
+const clearCloudWisps = [];
 const cloudGeometry = new THREE.SphereGeometry(1, 12, 8);
 let cloudSeed = 7519;
 function cloudRandom() {
@@ -245,6 +259,46 @@ for (let i = 0; i < cloudLimit; i++) {
   cloudClusters.push({ group, materials, index: i });
 }
 
+// One procedural alpha texture for the few thin summer clouds; shadowless and softly feathered.
+function buildSummerCloudWisps() {
+  const canvas = document.createElement('canvas');
+  canvas.width = 256; canvas.height = 64;
+  const context = canvas.getContext('2d');
+  for (const [x, y, width, height, alpha] of [
+    [62, 33, 60, 12, .46], [111, 28, 77, 17, .63], [164, 33, 76, 12, .62],
+    [202, 39, 52, 8, .34], [82, 42, 68, 6, .36]
+  ]) {
+    context.save();
+    context.translate(x, y); context.scale(width, height);
+    const edge = context.createRadialGradient(0, 0, 0, 0, 0, 1);
+    edge.addColorStop(0, `rgba(255,255,255,${alpha})`);
+    edge.addColorStop(.45, `rgba(255,255,255,${alpha * .64})`);
+    edge.addColorStop(1, 'rgba(255,255,255,0)');
+    context.fillStyle = edge; context.fillRect(-1, -1, 2, 2);
+    context.restore();
+  }
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  const material = new THREE.SpriteMaterial({ map: texture, transparent: true, depthWrite: false, fog: false, toneMapped: false });
+  const placements = [
+    [-81, 39, -112, 43, 11], [39, 36, -126, 50, 10], [102, 42, -62, 34, 9],
+    [-103, 46, 38, 37, 8], [30, 37, 77, 47, 11], [115, 42, 83, 37, 9]
+  ];
+  const wispCount = Math.round(CLEAR_SUMMER_MORNING.clouds * 50);
+  for (const [index, [x, y, z, width, height]] of placements.slice(0, wispCount).entries()) {
+    if (mobile && index % 2) continue;
+    const sprite = new THREE.Sprite(material);
+    sprite.position.set(x, y, z);
+    sprite.scale.set(width, height, 1);
+    sprite.renderOrder = -2;
+    sprite.visible = false;
+    scene.add(sprite);
+    clearCloudWisps.push({ sprite, x, z, phase: index * 1.65 });
+  }
+  return material;
+}
+const summerCloudMaterial = buildSummerCloudWisps();
+
 // Campus weather is descriptive; the player's device clock selects lighting.
 const SCHOOL_WEATHER_URL = 'https://api.open-meteo.com/v1/forecast?latitude=20.69795&longitude=106.46866&current=temperature_2m,relative_humidity_2m,apparent_temperature,is_day,precipitation,rain,showers,weather_code,cloud_cover,wind_speed_10m&timezone=Asia%2FHo_Chi_Minh';
 const environmentStatus = $('#environmentStatus');
@@ -265,8 +319,8 @@ function weatherLabel(code) {
 }
 
 const dayColors = ['sky', 'horizon', 'zenith', 'sun', 'ambient', 'ground', 'fog'];
-const dayValues = ['power', 'duskPower', 'fill', 'exposure', 'morning', 'night', 'sunset', 'fogDensity', 'lamps', 'clouds'];
-const scenesOfDay = LIGHTING_PRESETS.map(preset => ({ ...preset,
+const dayValues = ['power', 'duskPower', 'fill', 'ambientFill', 'exposure', 'morning', 'night', 'sunset', 'fogDensity', 'lamps', 'clouds', 'clearSky'];
+const scenesOfDay = visualPresets().map(preset => ({ ...preset,
   direction: new THREE.Vector3(...preset.direction).normalize(),
   ...Object.fromEntries(dayColors.map(field => [field, new THREE.Color(preset[field])]))
 }));
@@ -276,6 +330,7 @@ const cloudTint = new THREE.Color();
 const warmCloud = new THREE.Color(0xffbe94);
 const dayCloud = new THREE.Color(0xfff8eb);
 const nightCloud = new THREE.Color(0x50617c);
+const overcastTint = new THREE.Color(0xb9c4ce);
 
 function makeStars() {
   const count = mobile ? 230 : 410;
@@ -311,20 +366,58 @@ function sampleDay(from, to, t) {
   for (const field of dayValues) currentDay[field] = THREE.MathUtils.lerp(from[field], to[field], t);
 }
 
+function applySunShadowSettings(clearSky) {
+  const soft = clearSky > .015;
+  const nextFilter = soft ? THREE.PCFSoftShadowMap : baseShadowFilter;
+  const mapSize = soft ? clearShadowSize : baseShadowSize;
+  const shadow = sun.shadow;
+  const filterChanged = renderer.shadowMap.type !== nextFilter;
+  if (shadow.mapSize.x !== mapSize || filterChanged) {
+    shadow.map?.dispose();
+    shadow.map = null;
+    shadow.mapSize.setScalar(mapSize);
+    renderer.shadowMap.type = nextFilter;
+    renderer.shadowMap.needsUpdate = true;
+  }
+  // The PCF/PCFSoft choice is a shader define in r170. Refresh receivers only when it changes.
+  if (filterChanged) {
+    const receivers = new Set();
+    scene.traverse(mesh => {
+      if (!mesh.isMesh || !mesh.receiveShadow) return;
+      if (Array.isArray(mesh.material)) for (const material of mesh.material) receivers.add(material);
+      else receivers.add(mesh.material);
+    });
+    for (const material of receivers) material.needsUpdate = true;
+  }
+  const lerp = THREE.MathUtils.lerp;
+  const x = lerp(BASE_SHADOWS.x, clearShadowSpan, clearSky);
+  const y = lerp(BASE_SHADOWS.y, clearShadowSpan, clearSky);
+  if (Math.abs(shadow.camera.right - x) > .02 || Math.abs(shadow.camera.top - y) > .02) {
+    Object.assign(shadow.camera, { left: -x, right: x, top: y, bottom: -y });
+    shadow.camera.updateProjectionMatrix();
+  }
+  shadow.normalBias = lerp(BASE_SHADOWS.normalBias, CLEAR_DAY_SHADOWS.normalBias, clearSky);
+  shadow.bias = lerp(BASE_SHADOWS.bias, CLEAR_DAY_SHADOWS.bias, clearSky);
+  // PCFSoft samples a small texel footprint on Three r170; radius remains useful for the legacy PCF path.
+  shadow.radius = lerp(BASE_SHADOWS.radius, CLEAR_DAY_SHADOWS.radius, clearSky);
+}
+
 function applyDayLighting() {
-  const { direction, sky, morning, night, sunset, clouds } = currentDay;
+  const { direction, sky, morning, night, sunset, clearSky } = currentDay;
+  const overcast = daytimeOvercast(environment.cloudCover, morning);
+  const clouds = THREE.MathUtils.lerp(currentDay.clouds, .8, overcast);
   const skyAlpha = 1 - night;
   skyDome.material.uniforms.dayOpacity.value = skyAlpha;
   skyDome.material.uniforms.morningMix.value = 1;
-  skyDome.material.uniforms.morningHorizon.value.copy(currentDay.horizon);
-  skyDome.material.uniforms.morningZenith.value.copy(currentDay.zenith);
+  skyDome.material.uniforms.morningHorizon.value.copy(currentDay.horizon).lerp(overcastTint, overcast * .72);
+  skyDome.material.uniforms.morningZenith.value.copy(currentDay.zenith).lerp(overcastTint, overcast * .84);
   skyDome.material.uniforms.sunPosition.value.copy(direction).multiplyScalar(500);
   skyDome.material.uniforms.turbidity.value = 4.8 + sunset * 4;
   skyDome.visible = skyAlpha > .005;
   sunDirection.copy(direction);
   sun.position.copy(sun.target.position).addScaledVector(direction, 69);
   sun.color.copy(currentDay.sun);
-  sun.intensity = currentDay.power;
+  sun.intensity = currentDay.power * (1 - overcast * .56);
   duskFill.position.copy(direction).multiplyScalar(120);
   duskFill.color.copy(currentDay.sun);
   duskFill.intensity = currentDay.duskPower * (1 - clouds * .32);
@@ -341,7 +434,7 @@ function applyDayLighting() {
     morningBeams.visible = morning > .005;
     morningBeams.material.opacity = morning * .12;
   }
-  if (morningStructureShadows) morningStructureShadows.visible = morning > .005;
+  if (morningStructureShadows) morningStructureShadows.visible = morning > .005 && clearSky <= .015;
   moonDisk.position.copy(moonDirection).multiplyScalar(500);
   moonCore.position.copy(moonDisk.position);
   moonDisk.visible = moonCore.visible = night > .005;
@@ -352,21 +445,24 @@ function applyDayLighting() {
   hemisphereLight.color.copy(currentDay.ambient);
   hemisphereLight.groundColor.copy(currentDay.ground);
   hemisphereLight.intensity = currentDay.fill;
-  ambientLight.intensity = morning * .55;
+  ambientLight.intensity = currentDay.ambientFill;
   renderer.toneMappingExposure = currentDay.exposure;
   scene.background.copy(sky);
-  scene.fog.color.copy(currentDay.fog);
-  scene.fog.density = currentDay.fogDensity;
+  scene.fog.color.copy(currentDay.fog).lerp(overcastTint, overcast);
+  scene.fog.density = currentDay.fogDensity + overcast * .0019;
   const coverage = Math.max(0, (clouds - .04) / .96);
   const visibleCount = Math.round(coverage * cloudClusters.length);
   cloudTint.copy(dayCloud).lerp(warmCloud, sunset).lerp(nightCloud, night);
   for (const cloud of cloudClusters) {
-    cloud.group.visible = cloud.index < visibleCount;
+    cloud.group.visible = clearSky < .995 && cloud.index < visibleCount;
     for (const material of cloud.materials) {
       material.color.copy(cloudTint);
-      material.opacity = (.24 + coverage * .44) * (1 - night * .65);
+      material.opacity = (.24 + coverage * .44) * (1 - night * .65) * (1 - clearSky);
     }
   }
+  summerCloudMaterial.opacity = clearSky * .86;
+  for (const { sprite } of clearCloudWisps) sprite.visible = clearSky > .005;
+  applySunShadowSettings(clearSky);
   for (const material of glowingLampMaterials) material.emissiveIntensity = currentDay.lamps * .9;
   updateNightLights();
 }
@@ -376,7 +472,7 @@ function syncEnvironmentStatus(now = new Date()) {
     ? ''
     : weatherLabel(environment.weatherCode) + ' · ' + Math.round(environment.temperature) + '°C';
   const clockText = formatLocalClock(now);
-  const label = LIGHTING_PRESETS[lighting.phase].label;
+  const label = scenesOfDay[lighting.phase].label;
   const hudText = '🕒 ' + clockText + (weather ? ' · ' + weather : ' · ' + label);
   if (environmentStatus.textContent !== hudText) environmentStatus.textContent = hudText;
   if (mobileEnvironmentClock.textContent !== clockText) mobileEnvironmentClock.textContent = clockText;
@@ -391,7 +487,6 @@ function updateEnvironmentLighting() {
 const lighting = new LightingController((from, to, weight) => {
   sampleDay(scenesOfDay[from], scenesOfDay[to], weight);
   applyDayLighting();
-  renderer.shadowMap.needsUpdate = true;
 });
 
 function syncLightingClock() {
@@ -462,6 +557,7 @@ const ground = new THREE.Mesh(
 );
 ground.rotation.x = -Math.PI / 2;
 ground.position.set(0, -0.48, -28);
+ground.receiveShadow = true;
 scene.add(ground);
 const groundHalfWidth = ground.geometry.parameters.width / 2;
 const groundHalfDepth = ground.geometry.parameters.height / 2;
@@ -940,6 +1036,7 @@ function instanceCampusProps(campus) {
     instances.name = 'CampusInstances:' + kind;
     instances.receiveShadow = true;
     instances.castShadow = kind === 'bench';
+    instances.userData.clearDayCaster = kind === 'bench';
     for (const [i, object] of objects.entries()) {
       object.geometry.boundingBox.getCenter(center);
       transform.multiplyMatrices(inverse, object.matrixWorld).multiply(offset.makeTranslation(center.x, center.y, center.z));
@@ -981,7 +1078,7 @@ function batchCampusMeshes(campus) {
     if (!geometry.boundingBox) geometry.computeBoundingBox();
     geometry.boundingBox.getCenter(position).applyMatrix4(object.matrixWorld);
     const sector = Math.floor(position.x / 64) + ',' + Math.floor(position.z / 64);
-    const key = prefix + '|' + attributes + '|' + sector;
+    const key = prefix + '|' + attributes + '|' + sector + '|' + Boolean(object.userData.clearDayCaster);
     if (!groups.has(key)) groups.set(key, { objects: [], palette });
     groups.get(key).objects.push(object);
   });
@@ -1022,6 +1119,7 @@ function batchCampusMeshes(campus) {
     const batch = new THREE.Mesh(combined, palettes.get(palette) || objects[0].material);
     batch.name = 'CampusStaticBatch';
     batch.receiveShadow = true;
+    batch.userData.clearDayCaster = objects[0].userData.clearDayCaster;
     campus.add(batch);
     for (const object of objects) collisionMeshes.attach(object);
   }
@@ -1241,19 +1339,59 @@ function collectTreeShadowAnchors(campus) {
   });
 }
 
+function markClearDayCasters(campus) {
+  if (!scenesOfDay[0].clearSky) return;
+  const structure = /masonry|exterior.details|clay.roof|gate.security|02_Cong_Truong|canopy_entry|(?:^|[_\s])(?:utilitypole|polelamp|lamp_path|cotxegv|cột)|(?:bench|ghế.đá)|trunk.and.branches|cutout.(?:canopy|leaves)|^TruCong/i;
+  const surface = /^(?:NK Foliage|Trees)\b|weathered ivory plaster|warm limewash|roof tiles|fence brick|(?:lamp|post|pole).{0,12}(?:metal|paint|steel)/i;
+  campus.traverseVisible(mesh => {
+    if (!mesh.isMesh || mesh.userData.collision || Array.isArray(mesh.material) || mesh.material.transparent) return;
+    for (let part = mesh; part !== campus; part = part.parent) {
+      if (structure.test(part.name) || surface.test(mesh.material.name)) {
+        mesh.userData.clearDayCaster = true;
+        return;
+      }
+    }
+  });
+}
+
+function collectClearDayCasters(campus) {
+  campus.updateMatrixWorld(true);
+  campus.traverseVisible(mesh => {
+    if (!mesh.isMesh || !mesh.userData.clearDayCaster) return;
+    const bounds = new THREE.Box3().setFromObject(mesh);
+    if (!bounds.isEmpty()) clearDayCasters.push({ mesh, bounds, baseCast: mesh.castShadow });
+  });
+}
+
 function updateCampusShadows(time) {
   if (!started || time < nextShadowUpdate) return;
-  nextShadowUpdate = time + .18;
+  const clearAmount = currentDay.clearSky;
+  const naturalShadows = clearAmount > .015;
+  const outside = !activities.insideClassroom;
+  nextShadowUpdate = time + (naturalShadows ? (mobile ? CLEAR_DAY_SHADOWS.mobileInterval : CLEAR_DAY_SHADOWS.desktopInterval) : .18);
   const target = sun.target.position.set(walker.x, walker.y, walker.z);
+  if (naturalShadows) {
+    target.x -= Math.sin(walker.yaw) * CLEAR_DAY_SHADOWS.lookAhead * clearAmount;
+    target.z -= Math.cos(walker.yaw) * CLEAR_DAY_SHADOWS.lookAhead * clearAmount;
+    shadowSide.crossVectors(worldUp, sunDirection).normalize();
+    shadowUp.crossVectors(sunDirection, shadowSide).normalize();
+    const texelX = (sun.shadow.camera.right - sun.shadow.camera.left) / sun.shadow.mapSize.x;
+    const texelY = (sun.shadow.camera.top - sun.shadow.camera.bottom) / sun.shadow.mapSize.y;
+    const x = target.dot(shadowSide), y = target.dot(shadowUp);
+    target.addScaledVector(shadowSide, Math.round(x / texelX) * texelX - x);
+    target.addScaledVector(shadowUp, Math.round(y / texelY) * texelY - y);
+  }
   sun.position.copy(target).addScaledVector(sunDirection, 69);
   sun.target.updateMatrixWorld();
-  const outside = !activities.insideClassroom;
+  for (const { mesh, bounds, baseCast } of clearDayCasters) {
+    mesh.castShadow = baseCast || (naturalShadows && outside && bounds.distanceToPoint(target) <= (mobile ? 45 : CLEAR_DAY_SHADOWS.casterDistance));
+  }
   if (morningBeams) morningBeams.visible = outside && currentDay.morning > .005;
-  if (morningStructureShadows) morningStructureShadows.visible = outside && currentDay.morning > .005;
+  if (morningStructureShadows) morningStructureShadows.visible = outside && !naturalShadows && currentDay.morning > .005;
   const distance = tree => (tree.x - walker.x) ** 2 + (tree.z - walker.z) ** 2;
-  treeShadowAnchors.sort((a, b) => distance(a) - distance(b));
   let count = 0;
-  if (outside) {
+  if (outside && !naturalShadows) {
+    treeShadowAnchors.sort((a, b) => distance(a) - distance(b));
     for (const tree of treeShadowAnchors) {
       if (count >= treeShadowLimit || distance(tree) > 45 ** 2) break;
       const { x, y, z, height, broadCourtyardTree } = tree;
@@ -1276,10 +1414,20 @@ function updateCampusShadows(time) {
     mesh.instanceMatrix.needsUpdate = true;
   }
   let characterCount = 0;
-  if (outside && currentDay.morning > .005) {
-    for (const { root } of campusNpcs) {
-      if (characterCount >= characterShadowLimit) break;
-      if (!root.visible || root.position.distanceToSquared(walker) > 25 ** 2) continue;
+  for (const npc of campusNpcs) {
+    const { root } = npc;
+    const near = outside && root.visible && root.position.distanceToSquared(walker) <= 25 ** 2;
+    const real = naturalShadows && !mobile && near && characterCount < characterShadowLimit;
+    if (Boolean(npc.clearDayCast) !== real) {
+      npc.clearDayCast = real;
+      root.traverse(mesh => {
+        if (!mesh.isMesh || mesh.name === 'characterFace') return;
+        mesh.castShadow = real;
+        mesh.receiveShadow = real;
+      });
+    }
+    if (near && currentDay.morning > .005 && characterCount < characterShadowLimit) {
+      if (real) { characterCount++; continue; }
       shadowTransform.position.copy(root.position);
       shadowTransform.position.y += .89;
       shadowTransform.scale.set(.9, 1, .75);
@@ -1287,8 +1435,9 @@ function updateCampusShadows(time) {
       characterShadows.setMatrixAt(characterCount++, shadowTransform.matrix);
     }
   }
-  characterShadows.count = characterCount;
-  characterShadows.visible = characterCount > 0;
+  const proxyCount = naturalShadows && !mobile ? 0 : characterCount;
+  characterShadows.count = proxyCount;
+  characterShadows.visible = proxyCount > 0;
   characterShadows.instanceMatrix.needsUpdate = true;
   renderer.shadowMap.needsUpdate = true;
 }
@@ -2914,11 +3063,13 @@ campusLoader.load(
     startFeature('20/11 banner', () => addTeachersDayBanner(campus, scene, mobile));
     startFeature('traffic', () => traffic.init(campus));
     startFeature('Bùi Quốc Hiệp 06', () => createGateHorse(campus));
+    startFeature('daylight caster tags', () => markClearDayCasters(campus));
     startFeature('campus props', () => instanceCampusProps(campus));
     // Capture the named fountain anchors before static batching detaches their meshes.
     startFeature('fountain', () => createFountainEffect(campus));
     startFeature('static batching', () => batchCampusMeshes(campus));
     startFeature('visibility optimisation', () => optimiseCampusVisibility(campus));
+    startFeature('daylight casters', () => collectClearDayCasters(campus));
     dracoLoader.dispose();
     startFeature('NPCs', createCampusNpcs);
     const startSurface = findWalkSurface(walker.x, walker.z, walker.y);
@@ -3253,10 +3404,16 @@ function positionOutdoorView(distance = cameraDistance) {
 const clock = new THREE.Clock();
 function animateClouds(time) {
   for (const cloud of cloudClusters) {
+    if (!cloud.group.visible) continue;
     const base = cloud.group.userData.basePosition;
     const phase = cloud.group.userData.phase;
     cloud.group.position.x = base.x + Math.sin(time * 0.012 + phase) * 2.5;
     cloud.group.position.z = base.z + Math.cos(time * 0.009 + phase) * 1.8;
+  }
+  for (const { sprite, x, z, phase } of clearCloudWisps) {
+    if (!sprite.visible) continue;
+    sprite.position.x = x + Math.sin(time * .011 + phase) * 4;
+    sprite.position.z = z + Math.cos(time * .007 + phase) * 2;
   }
 }
 
