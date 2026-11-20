@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { createCampusActivities, createCampusProp } from './campus-activities.js';
 import { setDeskPose } from './campus-classrooms.js';
+import { setParkingPose } from './campus-parking.js';
 import { LightingController, BASE_SHADOWS, CLEAR_DAY_SHADOWS, CLEAR_SUMMER_MORNING, daytimeOvercast, visualPresets, formatLocalClock } from './campus-lighting.js';
 import { createPresencePanel, PRESENCE_HEARTBEAT_MS, PRESENCE_IDLE_MS } from './campus-presence.js';
 import { createCampusSound } from './campus-audio.js';
@@ -2671,6 +2672,22 @@ function setRemoteProp(root, kind) {
   root.userData.campusProp = prop;
 }
 
+function setRemotePosition(remote, position) {
+  const seat = activities.parkingAnchor(position.parkingSeat);
+  remote.parkingSeat = seat;
+  if (seat) {
+    remote.target.copy(seat.root);
+    remote.targetYaw = seat.yaw;
+    remote.parkingSlot = seat.slot;
+    remote.jumpStartedAt = 0;
+  } else {
+    remote.target.set(Number(position.x) || 0, Number(position.y) || 0, Number(position.z) || 0);
+    remote.targetYaw = Number(position.yaw) || 0;
+  }
+  remote.deskPose = seat ? 0 : Number(position.deskPose) || 0;
+  setRemoteProp(remote.root, position.prop);
+}
+
 function addRemotePlayer(data) {
   if(!data?.id||data.id===roomId) return null;
   presence.setPlayer(data.id, data.profile, data.presence);
@@ -2678,29 +2695,28 @@ function addRemotePlayer(data) {
   const incomingPosition=data.position||{};
   if(existing){
     existing.profile=data.profile||existing.profile;
-    existing.target.set(Number(incomingPosition.x)||0,Number(incomingPosition.y)||0,Number(incomingPosition.z)||0);
-    existing.targetYaw=Number(incomingPosition.yaw)||0;
-    existing.deskPose=Number(incomingPosition.deskPose)||0;
-    setRemoteProp(existing.root, incomingPosition.prop);
+    setRemotePosition(existing, incomingPosition);
     existing.lastSeen=performance.now();
     existing.nameTag.textContent=avatarTag(existing.profile);
     return existing;
   }
   const remoteProfile=data.profile||{};
-  const target=new THREE.Vector3(Number(incomingPosition.x)||0,Number(incomingPosition.y)||0,Number(incomingPosition.z)||0);
+  const target=new THREE.Vector3();
   const root=makeAvatar(remoteProfile.gender==='girl'?'girl':'boy',remoteProfile.outfit||{});
-  root.position.copy(target);
-  root.rotation.y=(Number(incomingPosition.yaw)||0)+Math.PI;
   root.userData.roomWalkPhase=Math.random()*Math.PI*2;
-  setRemoteProp(root, incomingPosition.prop);
   scene.add(root);
   const nameTag=document.createElement('div');
   nameTag.className='npc-name-tag remote-player-tag';
   nameTag.textContent=avatarTag(remoteProfile);
   $('#npcLabels').append(nameTag);
-  const remote={id:data.id,profile:remoteProfile,root,nameTag,target,targetYaw:Number(incomingPosition.yaw)||0,lastSeen:performance.now(),renderY:target.y,jumpStartedAt:0,jumpBaseY:target.y,chatBubble:null,chatUntil:0};
-  remote.deskPose=Number(incomingPosition.deskPose)||0;
+  const remote={id:data.id,profile:remoteProfile,root,nameTag,target,lastSeen:performance.now(),jumpStartedAt:0,chatBubble:null,chatUntil:0};
+  setRemotePosition(remote, incomingPosition);
+  root.position.copy(target);
+  root.rotation.y=remote.targetYaw+Math.PI;
+  remote.renderY=remote.jumpBaseY=target.y;
   remote.renderDeskPose=remote.deskPose;
+  remote.renderParkingPose=Number(Boolean(remote.parkingSeat));
+  if (remote.parkingSeat) setParkingPose(root, 1, remote.parkingSlot);
   remotePlayers.set(data.id,remote);
   updateRoomCount();
   return remote;
@@ -2730,10 +2746,7 @@ function handleRoomEvent(type,data) {
   }else if(type==='player-move'){
     const remote=remotePlayers.get(data.id);
     if(remote){
-      remote.target.set(Number(data.position.x)||0,Number(data.position.y)||0,Number(data.position.z)||0);
-      remote.targetYaw=Number(data.position.yaw)||0;
-      remote.deskPose=Number(data.position.deskPose)||0;
-      setRemoteProp(remote.root, data.position.prop);
+      setRemotePosition(remote, data.position);
       remote.lastSeen=performance.now();
     }
   }else if(type==='player-action'){
@@ -2781,6 +2794,7 @@ async function pollRoomEvents(generation) {
 }
 
 async function connectRoom() {
+  activities.resetParkingConnection();
   roomConnectionGeneration++;
   const generation=roomConnectionGeneration;
   roomPollController?.abort();
@@ -2904,8 +2918,13 @@ function updateRemotePlayers(dt,time) {
     remote.root.userData.roomWalkPhase+=dt*(moving?8:0);
     const swing=moving?Math.sin(remote.root.userData.roomWalkPhase)*0.42:0;
     remote.renderDeskPose+=(remote.deskPose-remote.renderDeskPose)*alpha;
-    setDeskPose(remote.root, remote.renderDeskPose);
-    if(remote.renderDeskPose<.02){
+    remote.renderParkingPose+=(Number(Boolean(remote.parkingSeat))-remote.renderParkingPose)*alpha;
+    if (remote.renderParkingPose >= .02) {
+      setParkingPose(remote.root, remote.renderParkingPose, remote.parkingSlot);
+    } else {
+      setDeskPose(remote.root, remote.renderDeskPose);
+    }
+    if(remote.renderDeskPose<.02 && remote.renderParkingPose<.02){
       remote.root.userData.legs[0].rotation.x=swing;
       remote.root.userData.legs[1].rotation.x=-swing;
       if(remote.root.userData.arms){
@@ -2930,6 +2949,7 @@ function updateRemotePlayers(dt,time) {
 
 function disconnectRoom(beacon = false) {
   const leavingId=roomId;
+  activities.resetParkingConnection();
   roomConnectionGeneration++;
   roomPollController?.abort();
   roomPollController=null;

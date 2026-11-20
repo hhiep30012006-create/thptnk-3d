@@ -17,6 +17,16 @@ const wheelShape = new THREE.CylinderGeometry(1, 1, 1, 10).rotateZ(Math.PI / 2);
 const pipeShape = new THREE.CylinderGeometry(1, 1, 1, 6);
 const roundPanel = new THREE.SphereGeometry(1, 8, 4);
 const up = new THREE.Vector3(0, 1, 0);
+const SEAT_SPAN = .55;
+const AVATAR_HIP_HEIGHT = .82;
+
+export function setParkingPose(player, blend, slot) {
+  player.userData.legs.forEach((leg, index) => {
+    leg.rotation.x = -1.13 * blend;
+    player.userData.knees[index].rotation.x = 1.51 * blend;
+  });
+  player.userData.arms.forEach(arm => { arm.rotation.x = (slot === 0 ? -.76 : -.18) * blend; });
+}
 
 function addPart(parts, geometry, tint, position, scale, painted = false, rotation) {
   const part = geometry.index ? geometry.toNonIndexed() : geometry.clone();
@@ -63,8 +73,8 @@ function buildVehicle(scooter) {
   if (scooter) {
     round(color.panel, [0, .56, -.39], [.265, .22, .49], true);
     round(color.panel, [0, .72, .43], [.251, .31, .16], true);
-    saddle = [0, .839, -.36];
-    box(color.saddle, [0, .781, -.39], [.39, .115, .65]);
+    saddle = [0, .839, -.38];
+    box(color.saddle, [0, .781, -.38], [.39, .115, .93]);
     round(color.panel, [0, 1.09, .49], [.205, .087, .102], true);
     box(color.lamp, [0, 1.09, .59], [.21, .082, .033]);
     for (const side of [-1, 1]) {
@@ -77,8 +87,8 @@ function buildVehicle(scooter) {
   } else {
     box(color.panel, [0, .48, -.46], [.36, .16, .67], true);
     box(color.panel, [0, .58, -.34], [.27, .16, .31], true);
-    saddle = [0, .8, -.35];
-    box(color.saddle, [0, .744, -.39], [.29, .112, .62]);
+    saddle = [0, .8, -.38];
+    box(color.saddle, [0, .744, -.38], [.29, .112, .93]);
     box(color.panel, [0, .60, .38], [.22, .31, .16], true);
     box(color.lamp, [0, .76, .51], [.16, .09, .044]);
     box(color.rear, [0, .51, -.812], [.15, .065, .033]);
@@ -199,7 +209,7 @@ export function addStudentParking(campus, scene, findFloor) {
     const { geometry, saddle } = buildVehicle(type === 1);
     const mesh = new THREE.InstancedMesh(geometry, material, placements.length);
     mesh.name = type ? 'ParkingElectricScooters' : 'ParkingElectricBikes';
-    const seats = placements.map(({ point, bay, row }, index) => {
+    const vehicles = placements.map(({ point, bay, row }, index) => {
       rotation.z = THREE.MathUtils.degToRad(5 + (bay + row * 2) % 4);
       orientation.setFromEuler(rotation);
       point.y += .014;
@@ -207,18 +217,25 @@ export function addStudentParking(campus, scene, findFloor) {
       mesh.setMatrixAt(index, matrix);
       mesh.setColorAt(index, new THREE.Color(paint[(bay * 3 + row * 2 + type) % paint.length]));
       if (type === 0 && (singleRow ? bay === 0 : row === 1 && bay === 5)) helmet = makeHelmet(matrix);
-      return {
-        point: saddle.clone().applyMatrix4(matrix),
-        approach: point,
-        direction: new THREE.Vector3(0, 0, -1),
-        parking: true
-      };
+      // Slot zero sits by the handlebars. Stable row/bay IDs match across browsers.
+      const id = `parking-${row}-${bay}`;
+      const direction = new THREE.Vector3(0, 0, 1).transformDirection(matrix);
+      const yaw = Math.atan2(-direction.x, -direction.z);
+      const seats = [0, 1].map(slot => {
+        const anchor = saddle.clone();
+        anchor.z += (slot === 0 ? .5 : -.5) * SEAT_SPAN;
+        anchor.applyMatrix4(matrix);
+        const root = anchor.clone();
+        root.y -= AVATAR_HIP_HEIGHT;
+        return { root, yaw, direction, vehicle: id, slot };
+      });
+      return { id, seats, approach: point, point: saddle.clone().applyMatrix4(matrix) };
     });
     mesh.instanceMatrix.needsUpdate = true;
     mesh.instanceColor.needsUpdate = true;
     mesh.computeBoundingSphere();
     group.add(mesh);
-    models.push({ mesh, seats });
+    models.push({ mesh, vehicles });
   }
   if (helmet) group.add(helmet);
   scene.add(group);

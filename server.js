@@ -124,7 +124,51 @@ function deliverRoomEvent(client, eventName, value) {
 }
 
 function playerSnapshot(client) {
-  return { id: client.id, profile: client.profile, position: client.position, presence: client.presence ?? 'active' };
+  return { id: client.id, profile: client.profile, position: playerPosition(client), presence: client.presence ?? 'active' };
+}
+
+function playerPosition(client) {
+  if (!client.parkingSeat) return client.position;
+  const { vehicle, slot } = client.parkingSeat;
+  return { ...client.position, parkingSeat: { vehicle, slot } };
+}
+
+function broadcastPlayerMove(client) {
+  broadcast(client.room, 'player-move', { id: client.id, position: playerPosition(client) }, client.id);
+}
+
+function handleParkingSeat(client, body, response) {
+  const { vehicle, token, action } = body;
+  if (typeof vehicle !== 'string' || !/^parking-[01]-\d{1,2}$/.test(vehicle) || typeof token !== 'string'
+      || !/^[a-f0-9]{32}$/.test(token) || !['claim', 'release'].includes(action)) {
+    return sendJson(response, 400, { error: 'Xe hoặc chỗ ngồi không hợp lệ.' });
+  }
+  const seat = client.parkingSeat;
+  if (action === 'release') {
+    client.cancelledParkingToken = token;
+    if (seat?.vehicle === vehicle && seat.token === token) {
+      client.parkingSeat = null;
+      broadcastPlayerMove(client);
+    }
+    return sendJson(response, 200, { ok: true });
+  }
+  if (client.cancelledParkingToken === token || client.classroomSeat || (seat && seat.vehicle !== vehicle)) {
+    return sendJson(response, 409, { error: 'Không thể chọn chỗ này. Hãy đứng dậy rồi thử lại.' });
+  }
+  if (seat) {
+    seat.token = token;
+    return sendJson(response, 200, { slot: seat.slot });
+  }
+  // Check both positions and reserve one in the same turn, even on simultaneous clicks.
+  let occupied = 0;
+  for (const other of roomClients(client.room)) {
+    if (other.parkingSeat?.vehicle === vehicle) occupied |= 1 << other.parkingSeat.slot;
+  }
+  if (occupied === 3) return sendJson(response, 409, { error: 'Xe này đã đủ hai người.' });
+  const slot = occupied & 1 ? 1 : 0;
+  client.parkingSeat = { vehicle, slot, token };
+  broadcastPlayerMove(client);
+  return sendJson(response, 200, { slot });
 }
 
 const validPresence = new Set(['active', 'idle', 'away']);
@@ -435,6 +479,12 @@ async function handleApi(request, response, url) {
     return;
   }
 
+  if (url.pathname === '/api/parking/seat') {
+    const client = getClient(body);
+    if (!client?.joined) return sendJson(response, 403, { error: 'Hãy vào trường trước.' });
+    return handleParkingSeat(client, body, response);
+  }
+
   if (url.pathname === '/api/classroom/seat') {
     const client = getClient(body);
     if (!client?.joined) { sendJson(response, 403, { error: 'Hãy vào trường trước.' }); return; }
@@ -445,6 +495,7 @@ async function handleApi(request, response, url) {
       if (client.classroomSeat === body.seat) client.classroomSeat = undefined;
       sendJson(response, 200, { ok: true }); return;
     }
+    if (client.parkingSeat) return sendJson(response, 409, { error: 'Hãy xuống xe trước khi ngồi vào bàn.' });
     for (const other of roomClients(client.room)) {
       if (other !== client && other.classroomSeat === body.seat) {
         sendJson(response, 409, { error: 'Ghế này đang có người ngồi.' }); return;
@@ -527,7 +578,7 @@ async function handleApi(request, response, url) {
     if (!client?.joined) { sendJson(response, 404, { error: 'Bạn chưa vào phòng.' }); return; }
     client.position = cleanPosition(body.position);
     client.lastSeen = Date.now();
-    broadcast(client.room, 'player-move', { id: client.id, position: client.position }, client.id);
+    broadcastPlayerMove(client);
     sendJson(response, 200, { ok: true });
     return;
   }
@@ -536,6 +587,7 @@ async function handleApi(request, response, url) {
     const client = getClient(body);
     if (!client?.joined) { sendJson(response, 404, { error: 'Bạn chưa vào phòng.' }); return; }
     if (body.action !== 'jump') { sendJson(response, 400, { error: 'Hành động không hợp lệ.' }); return; }
+    if (client.parkingSeat) return sendJson(response, 409, { error: 'Hãy xuống xe trước khi nhảy.' });
     const now = Date.now();
     if (now - client.lastAction < 250) { sendJson(response, 429, { error: 'Đợi một chút rồi thử lại nhé.' }); return; }
     client.position = cleanPosition(body.position);

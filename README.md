@@ -48,6 +48,7 @@ Máy chủ hiện hỗ trợ các thiết bị cùng mạng Wi-Fi. Hosting tĩnh
 - Bấm **Bảng vàng kỷ niệm** để ký tên và thả tim. Khi chạy cục bộ, lời nhắn được lưu trong thư mục dữ liệu người dùng (trên Windows là `%LOCALAPPDATA%\thptnk-3d\guestbook.json`). Có thể đổi đường dẫn bằng `GUESTBOOK_FILE`.
 - Khi triển khai Render, chạy `npm ci` ở bước build và `npm start` ở bước start. Đặt `MONGODB_URI` trong Environment của Render để lưu lưu bút trên MongoDB Atlas. Có thể đặt `MONGODB_DATABASE` để đổi tên cơ sở dữ liệu mặc định `thptnk`. Nếu dùng ổ đĩa lưu trữ bền vững, đặt `GUESTBOOK_FILE` trỏ tới tệp trên ổ đó.
 - Hai người đứng gần nhau trong vùng cổng trường hoặc bờ hồ thì nút **Ảnh nhóm** sáng lên. Bấm nút hoặc nhấn **P** rồi tải ảnh PNG đã đóng dấu ngày.
+- Trong **Nhà xe học sinh**, tới gần và nhấn **E**, bấm nút tương tác hoặc chạm vào xe điện. Hai người cùng phòng có thể ngồi trước và sau trên cùng một xe. Người xem thấy cả vị trí lẫn tư thế của hai người. Chỗ ngồi được trả lại khi đứng dậy hoặc rời phòng.
 
 Trên điện thoại, dùng nửa trái để kéo joystick và vuốt nửa phải để xoay góc nhìn. Menu **☰** có dịch chuyển nhanh, tiến độ, chat và nhạc nền. Hãy nói chuyện với bác bảo vệ để xem hướng dẫn.
 

@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { createClassroomSystems } from './campus-classrooms.js';
-import { addStudentParking } from './campus-parking.js';
+import { addStudentParking, setParkingPose } from './campus-parking.js';
 import { createGateHorseDialogue } from './campus-horse-dialog.js';
 import { createFlowerQuest } from './campus-flowers.js';
 import { createSecretQuest } from './campus-secret.js';
@@ -9,6 +9,8 @@ const vector = (x, y, z) => new THREE.Vector3(x, y, z);
 const bounds = object => new THREE.Box3().setFromObject(object);
 const center = object => bounds(object).getCenter(new THREE.Vector3());
 const distance = (a, b) => Math.hypot(a.x - b.x, a.z - b.z);
+const PARKING_REACH = 2.4;
+const PARKING_REQUEST_TIMEOUT_MS = 5000;
 
 export function createCampusProp(kind, color = { tea: 0xc49a6c, soda: 0xb94734, snack: 0xefb830 }[kind]) {
   const prop = new THREE.Group();
@@ -37,6 +39,7 @@ export function createCampusActivities({ scene, camera, renderer, walker, keys, 
   const title = dialog.querySelector('h2');
   const content = dialog.querySelector('.campus-dialog-content');
   const targets = [];
+  const parkingVehicles = new Map();
   const missions = {
     tribute: 'Thắp hương hoặc dâng hoa', chill: 'Ngồi ghế đá ngắm cảnh',
     classroom: 'Viết chữ lên bảng lớp', guestbook: 'Ký bảng vàng', photo: 'Chụp ảnh nhóm', flowers: 'Gói và tặng bó hoa tri ân'
@@ -62,6 +65,7 @@ export function createCampusActivities({ scene, camera, renderer, walker, keys, 
   let nearby;
   let horseTarget;
   let seated;
+  let parkingPending;
   let ceremony;
   let room;
   let indoors = false;
@@ -156,15 +160,15 @@ export function createCampusActivities({ scene, camera, renderer, walker, keys, 
     const parking = addStudentParking(campus, scene, floor);
     if (parking) {
       const label = '[E] Ngồi lên xe điện';
-      const reach = 2.4;
-      for (const { mesh, seats } of parking.models) {
+      for (const { mesh, vehicles } of parking.models) {
         addTarget(mesh, label, Infinity, hit => {
-          const seat = seats[hit?.instanceId];
-          if (seat && distance(seat.approach, walker) <= reach) sit(seat);
+          const vehicle = vehicles[hit?.instanceId];
+          if (vehicle) void sitOnVehicle(vehicle);
         }, { proximity: false });
-        for (const seat of seats) {
-          addTarget(mesh, label, reach, () => sit(seat), {
-            key: 'KeyE', icon: '🛵', point: seat.approach, clickable: false
+        for (const vehicle of vehicles) {
+          parkingVehicles.set(vehicle.id, vehicle);
+          addTarget(mesh, label, PARKING_REACH, () => { void sitOnVehicle(vehicle); }, {
+            key: 'KeyE', icon: '🛵', point: vehicle.approach, clickable: false
           });
         }
       }
@@ -447,6 +451,42 @@ export function createCampusActivities({ scene, camera, renderer, walker, keys, 
     biography.hidden = false;
   }
 
+  function parkingRequest(reservation, action) {
+    return post('/api/parking/seat', { ...reservation, action }, AbortSignal.timeout(PARKING_REQUEST_TIMEOUT_MS));
+  }
+
+  function releaseParking(reservation) {
+    if (!reservation.id) return;
+    parkingRequest(reservation, 'release').catch(() => {
+      if (getRoom().id === reservation.id) parkingRequest(reservation, 'release').catch(() => {});
+    });
+  }
+
+  async function sitOnVehicle(vehicle) {
+    const offset = vehicle.approach;
+    if (!active || !walker.onGround || seated || parkingPending || indoors || ceremony || dialog.open
+        || distance(offset, walker) > PARKING_REACH || Math.abs(offset.y - walker.y) > 1.5) return;
+    const id = getRoom().id;
+    const token = Array.from(crypto.getRandomValues(new Uint32Array(4)), value => value.toString(16).padStart(8, '0')).join('');
+    const reservation = { id, token, vehicle: vehicle.id };
+    parkingPending = reservation;
+    resetInput();
+    try {
+      const { slot } = id ? await parkingRequest(reservation, 'claim') : { slot: 0 };
+      if (parkingPending !== reservation || getRoom().id !== id || !active || dialog.open || !vehicle.seats[slot]) {
+        releaseParking(reservation);
+        return;
+      }
+      const seat = vehicle.seats[slot];
+      sit({ point: vehicle.point, direction: seat.direction, parking: { seat, reservation } });
+    } catch (error) {
+      releaseParking(reservation);
+      if (parkingPending === reservation) notice(error.message);
+    } finally {
+      if (parkingPending === reservation) parkingPending = undefined;
+    }
+  }
+
   function sit(seat) {
     if (!walker.onGround || indoors || seated || ceremony || dialog.open) return;
     seated = { ...seat, previous: { ...walker }, time: performance.now() };
@@ -465,13 +505,21 @@ export function createCampusActivities({ scene, camera, renderer, walker, keys, 
   function leaveSeat() {
     if (!seated) return;
     Object.assign(walker, seated.previous);
+    const parking = seated.parking;
     seated = undefined;
+    if (parking) releaseParking(parking.reservation);
     sound.setMemory(Boolean(memoryDialog || captured));
     document.body.classList.remove('campus-chill', 'campus-parking-seat');
     stand.hidden = true;
     keys.clear();
     const player = getPlayer();
     if (player) player.visible = true;
+  }
+
+  function resetParkingConnection() {
+    if (parkingPending) releaseParking(parkingPending);
+    parkingPending = undefined;
+    if (seated?.parking) leaveSeat();
   }
 
   function drawBoard({ text, color }) {
@@ -747,7 +795,7 @@ export function createCampusActivities({ scene, camera, renderer, walker, keys, 
   }
 
   function handleKey(event) {
-    if (captured || dialog.open || horseDialogue.modalOpen || flowers.giving || secret.climbing) return true;
+    if (captured || parkingPending || dialog.open || horseDialogue.modalOpen || flowers.giving || secret.climbing) return true;
     if (classrooms.blocked) {
       if (!event.repeat && (event.code === 'KeyE' || event.code === 'Space')) {
         event.preventDefault();
@@ -780,7 +828,7 @@ export function createCampusActivities({ scene, camera, renderer, walker, keys, 
   }
 
   function click(x, y) {
-    if (!active || seated || classrooms.blocked || ceremony || dialog.open || horseDialogue.modalOpen || flowers.giving || secret.climbing) return;
+    if (!active || seated || parkingPending || classrooms.blocked || ceremony || dialog.open || horseDialogue.modalOpen || flowers.giving || secret.climbing) return;
     const rect = renderer.domElement.getBoundingClientRect();
     pointer.set((x - rect.left) / rect.width * 2 - 1, 1 - (y - rect.top) / rect.height * 2);
     ray.setFromCamera(pointer, camera);
@@ -855,18 +903,22 @@ export function createCampusActivities({ scene, camera, renderer, walker, keys, 
     if (seated && player) {
       const { point, direction, parking } = seated;
       const blend = Math.min((now - seated.time) / 320, 1);
-      player.position.set(point.x, point.y - .82, point.z);
-      player.rotation.y = Math.atan2(direction.x, direction.z);
-      player.userData.legs.forEach((leg, i) => {
-        leg.rotation.x = -(parking ? 1.13 : Math.PI / 2) * blend;
-        player.userData.knees[i].rotation.x = (parking ? 1.51 : Math.PI / 2) * blend;
-      });
-      player.userData.arms.forEach(arm => { arm.rotation.x = (parking ? -.76 : -.22) * blend; });
       if (parking) {
+        const { seat } = parking;
+        player.position.copy(seat.root);
+        player.rotation.y = seat.yaw + Math.PI;
+        setParkingPose(player, blend, seat.slot);
         player.visible = true;
         camera.position.set(point.x + 1.88, point.y + 1.45, point.z - 3.65);
         camera.lookAt(point.x, point.y + .22, point.z - .22);
       } else {
+        player.position.set(point.x, point.y - .82, point.z);
+        player.rotation.y = Math.atan2(direction.x, direction.z);
+        player.userData.legs.forEach((leg, i) => {
+          leg.rotation.x = -Math.PI / 2 * blend;
+          player.userData.knees[i].rotation.x = Math.PI / 2 * blend;
+        });
+        player.userData.arms.forEach(arm => { arm.rotation.x = -.22 * blend; });
         player.visible = blend < 1;
         camera.position.copy(point).addScaledVector(direction, .19).add(vector(0, .87, 0));
         camera.lookAt(point.clone().addScaledVector(direction, 12).add(vector(0, .48, 0)));
@@ -895,7 +947,7 @@ export function createCampusActivities({ scene, camera, renderer, walker, keys, 
       }
       if (boardSign && !indoors && distance(boardSign.position, walker) < 12 && now >= nextGuestbookRead) refreshGuestbookBoard();
     }
-    const actionable = Boolean(nearby) && !seated && !classrooms.blocked && !ceremony && !dialog.open && !horseDialogue.talking && !flowers.giving && !secret.climbing;
+    const actionable = Boolean(nearby) && !seated && !parkingPending && !classrooms.blocked && !ceremony && !dialog.open && !horseDialogue.talking && !flowers.giving && !secret.climbing;
     prompt.hidden = !actionable;
     if (actionable) {
       const label = typeof nearby.label === 'function' ? nearby.label() : nearby.label;
@@ -1105,14 +1157,15 @@ export function createCampusActivities({ scene, camera, renderer, walker, keys, 
   return {
     init, update, click, handleKey, openTravel, openProgress, openAudio, registerNpc, registerGateHorse, talk,
     classrooms,
-    leaveSeat, horseDialogue,
+    leaveSeat, resetParkingConnection, horseDialogue,
+    parkingAnchor(seat) { return seat ? parkingVehicles.get(seat.vehicle)?.seats[seat.slot] : undefined; },
     teleportToMap(point, yaw) { teleport(point, yaw, false); },
     get dialogSpeaker() { return dialog.open ? dialogSpeaker : null; },
     registerFlowerTeacher: flowers.registerTeacher, flowersProfileChanged: flowers.profileChanged,
     registerSecretGuard: secret.registerGuard, registerSecretVendor: secret.registerVendor,
     revealSecretClue: secret.revealClue, secretProfileChanged: secret.profileChanged,
     get trafficWarningActive() { return secret.trafficWarningActive; },
-    get blocksMovement() { return Boolean(captured || seated || classrooms.blocked || ceremony || dialog.open || horseDialogue.modalOpen || flowers.giving || secret.climbing); },
+    get blocksMovement() { return Boolean(captured || seated || parkingPending || classrooms.blocked || ceremony || dialog.open || horseDialogue.modalOpen || flowers.giving || secret.climbing); },
     get cameraOverride() { return Boolean(captured || seated || classrooms.blocked || ceremony || secret.climbing); },
     get chilling() { return Boolean(seated); },
     get activeIncenseLights() { return activeIncenseLights; },
