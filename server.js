@@ -511,7 +511,7 @@ function serveStatic(request, response, pathname) {
     });
     return;
   }
-  if (!/^\/(?:index\.html|app\.js|campus-activities\.js|campus-classrooms\.js|campus-lighting\.js|campus-presence\.js|campus-audio\.js|campus-flowers\.js|campus-secret\.js|campus-banner\.js|campus-traffic\.js|campus-map\.js|campus-parking\.js|campus-horse-dialog\.js|campus-morning-light\.js|style\.css|assets\/[^/\\]+)$/.test(decoded)) {
+  if (!/^\/(?:index\.html|app\.js|campus-activities\.js|campus-camera\.js|campus-classrooms\.js|campus-lighting\.js|campus-presence\.js|campus-audio\.js|campus-flowers\.js|campus-secret\.js|campus-banner\.js|campus-traffic\.js|campus-map\.js|campus-parking\.js|campus-horse-dialog\.js|campus-morning-light\.js|style\.css|assets\/[^/\\]+)$/.test(decoded)) {
     response.writeHead(404); response.end('Not found'); return;
   }
   const fullPath = path.resolve(ROOT, `.${decoded}`);

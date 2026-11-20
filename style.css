@@ -745,6 +745,21 @@ body.donate-open { overscroll-behavior: none; }
 /* HUD controls remain above the 3D canvas and accept both mouse and touch. */
 #hud { z-index: 6; pointer-events: auto; }
 #hud .pill { position: relative; z-index: 1; pointer-events: auto; }
+.camera-toggle { display: inline-flex; align-items: center; justify-content: center; gap: 6px; white-space: nowrap; touch-action: manipulation; }
+.camera-icon { width: 19px; height: 19px; flex: none; }
+.camera-frame { display: none; }
+.camera-toggle[data-camera-mode="first"] .camera-eye { fill: #ffe5a5; stroke: #ffe5a5; }
+.camera-toggle[data-camera-mode="first"] .camera-icon circle { fill: #24211d; stroke: #24211d; }
+.camera-toggle[data-camera-mode="overview"] .camera-frame { display: initial; }
+.camera-toggle:active { background: #ffffff32; }
+.camera-toggle:disabled { cursor: wait; }
+#cameraToggle .camera-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+#mobileMenuItems #mobileCameraToggle { justify-content: flex-start; min-height: 44px; }
+@media (max-width: 1040px) {
+  body:not(.mobile-campus) #hud { gap: 6px; }
+  body:not(.mobile-campus) #hud .brand { min-width: 115px; }
+  body:not(.mobile-campus) #hud .pill { padding-inline: 8px; }
+}
 #campusPhoto { z-index: 8; }
 
 /* Chat notification counters. */

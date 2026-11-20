@@ -34,6 +34,11 @@ Máy chủ hiện hỗ trợ các thiết bị cùng mạng Wi-Fi. Hosting tĩnh
 - `campus-lighting.js` quyết định pha ánh sáng từ giờ thiết bị (06:00, 16:01 và 19:01). `app.js` kiểm tra giờ mỗi giây, cập nhật khi quay lại tab và nội suy đèn, bầu trời, sương trong vòng lặp render khi đổi pha. Có thể chỉnh màu, cường độ và thời gian chuyển ở đầu module.
 - `campus-presence.js` quản lý danh sách và cập nhật từng dòng HUD. `app.js` gửi trạng thái qua `/api/heartbeat` của `server.js`. Danh sách dùng biệt danh, lớp/niên khóa và trạng thái trong chính phòng đang chơi. Sau khoảng hai phút không có thao tác, trạng thái đổi sang không hoạt động.
 
+## Góc nhìn camera
+
+- Nhấn **V** hoặc nút hình con mắt để chuyển lần lượt qua góc nhìn thứ ba, góc nhìn thứ nhất và góc nhìn từ trên cao. Trên điện thoại, nút nằm trong menu **☰**. Kéo để xoay, dùng cuộn chuột hoặc chụm hai ngón tay ở vùng xoay để thu phóng góc nhìn thứ ba và từ trên cao.
+- `campus-camera.js` quản lý camera duy nhất, thông số từng góc, nội suy và ghi nhớ chế độ. Vòng lặp trong `app.js` cập nhật camera sau bước di chuyển của nhân vật. Camera dùng cùng hướng với điều khiển WASD, đọc lưới va chạm của sân trường và chuyển hướng thực tế sang ghim trên bản đồ. `campus-activities.js` giữ quyền điều khiển camera khi chụp ảnh, tham gia hoạt cảnh hoặc ngồi.
+
 ## Tương tác và lưu bút
 
 - Áp sát lư hương rồi nhấn **F** hoặc chọn **Dâng hoa**. Nhấn **E** hoặc bấm ghế để ngồi nghỉ.

@@ -39,6 +39,7 @@ export function createClassroomSystems({ walker, getPlayer, getRoom, post, floor
   const hitBox = new THREE.Box3();
   const rotation = new THREE.Matrix4();
   const turn = new THREE.Quaternion();
+  const cameraDoorHit = new THREE.Vector3();
   let doorTestBox;
   let seating;
   let pending;
@@ -150,6 +151,22 @@ export function createClassroomSystems({ walker, getPlayer, getRoom, post, floor
 
   function doorTouchesPlayer(door) {
     return Math.abs(door.hinge.y - doorTestBox.min.y) < 3 && door.collider.intersectsBox3(doorTestBox);
+  }
+
+  function traceCameraDoors(ray, extent, nearest) {
+    // The hinge bin can sit just beyond the swept camera area when a leaf is open.
+    const minX = Math.floor((extent.min.x - 2) / CELL), maxX = Math.floor((extent.max.x + 2) / CELL);
+    const minZ = Math.floor((extent.min.z - 2) / CELL), maxZ = Math.floor((extent.max.z + 2) / CELL);
+    for (let x = minX; x <= maxX; x++) for (let z = minZ; z <= maxZ; z++) {
+      const bucket = doorGrid.get(cellKey(x, z));
+      if (!bucket) continue;
+      for (const { collider } of bucket) {
+        if (collider.center.y < extent.min.y - 2 || collider.center.y > extent.max.y + 2) continue;
+        if (collider.containsPoint(ray.origin)) return 0;
+        if (collider.intersectRay(ray, cameraDoorHit)) nearest = Math.min(nearest, cameraDoorHit.distanceTo(ray.origin));
+      }
+    }
+    return nearest;
   }
 
   function addSeat(chair, desk, name) {
@@ -392,7 +409,7 @@ export function createClassroomSystems({ walker, getPlayer, getRoom, post, floor
   }
 
   return {
-    prepare, collidesDoor, standUp, reset,
+    prepare, collidesDoor, traceCameraDoors, standUp, reset,
     targetsNear() { nearbyTargets.length = 0; nearby(targetGrid, walker.x, walker.z, target => { nearbyTargets.push(target); }); return nearbyTargets; },
     update(dt, active) { updateDoors(dt, active); if (active) updateSeat(dt); },
     get blocked() { return Boolean(seating || pending); },

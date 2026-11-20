@@ -8,6 +8,7 @@ import { createFlowerBouquet } from './campus-flowers.js';
 import { addTeachersDayBanner, teachersDayBackdropName } from './campus-banner.js';
 import { createCampusTraffic } from './campus-traffic.js';
 import { createCampusMap } from './campus-map.js';
+import { CameraController, CameraMode, CAMERA_VIEWS, createCameraProbe } from './campus-camera.js';
 import { createMorningSunbeams, createMorningStructureShadows } from './campus-morning-light.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
@@ -19,6 +20,8 @@ const $ = selector => document.querySelector(selector);
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0xddf0ff);
 scene.fog = new THREE.FogExp2(0xddf0ff, .00245);
+let campusFogDensity = scene.fog.density;
+const OVERVIEW_SHADOW_SPAN = { mobile: 5, desktop: 8 };
 
 const mobile = matchMedia('(pointer: coarse)').matches || (navigator.maxTouchPoints > 0 && matchMedia('(any-pointer: coarse)').matches);
 document.body.classList.toggle('mobile-campus', mobile);
@@ -27,7 +30,6 @@ let renderScale = 1;
 let frameSampleTime = 0;
 let frameSampleCount = 0;
 const moveStick = new THREE.Vector2();
-const cameraForward = new THREE.Vector3();
 let nextShadowUpdate = 0;
 const projectedLabel = new THREE.Vector3();
 const projectedChatBubble = new THREE.Vector3();
@@ -366,6 +368,17 @@ function sampleDay(from, to, t) {
   for (const field of dayValues) currentDay[field] = THREE.MathUtils.lerp(from[field], to[field], t);
 }
 
+function fitSunShadowCamera(clearSky, overview = 0) {
+  const extra = overview * (mobile ? OVERVIEW_SHADOW_SPAN.mobile : OVERVIEW_SHADOW_SPAN.desktop);
+  const shadowCamera = sun.shadow.camera;
+  const x = THREE.MathUtils.lerp(BASE_SHADOWS.x, clearShadowSpan, clearSky) + extra;
+  const y = THREE.MathUtils.lerp(BASE_SHADOWS.y, clearShadowSpan, clearSky) + extra;
+  if (Math.abs(shadowCamera.right - x) > .02 || Math.abs(shadowCamera.top - y) > .02) {
+    Object.assign(shadowCamera, { left: -x, right: x, top: y, bottom: -y });
+    shadowCamera.updateProjectionMatrix();
+  }
+}
+
 function applySunShadowSettings(clearSky) {
   const soft = clearSky > .015;
   const nextFilter = soft ? THREE.PCFSoftShadowMap : baseShadowFilter;
@@ -390,12 +403,6 @@ function applySunShadowSettings(clearSky) {
     for (const material of receivers) material.needsUpdate = true;
   }
   const lerp = THREE.MathUtils.lerp;
-  const x = lerp(BASE_SHADOWS.x, clearShadowSpan, clearSky);
-  const y = lerp(BASE_SHADOWS.y, clearShadowSpan, clearSky);
-  if (Math.abs(shadow.camera.right - x) > .02 || Math.abs(shadow.camera.top - y) > .02) {
-    Object.assign(shadow.camera, { left: -x, right: x, top: y, bottom: -y });
-    shadow.camera.updateProjectionMatrix();
-  }
   shadow.normalBias = lerp(BASE_SHADOWS.normalBias, CLEAR_DAY_SHADOWS.normalBias, clearSky);
   shadow.bias = lerp(BASE_SHADOWS.bias, CLEAR_DAY_SHADOWS.bias, clearSky);
   // PCFSoft samples a small texel footprint on Three r170; radius remains useful for the legacy PCF path.
@@ -449,7 +456,7 @@ function applyDayLighting() {
   renderer.toneMappingExposure = currentDay.exposure;
   scene.background.copy(sky);
   scene.fog.color.copy(currentDay.fog).lerp(overcastTint, overcast);
-  scene.fog.density = currentDay.fogDensity + overcast * .0019;
+  campusFogDensity = currentDay.fogDensity + overcast * .0019;
   const coverage = Math.max(0, (clouds - .04) / .96);
   const visibleCount = Math.round(coverage * cloudClusters.length);
   cloudTint.copy(dayCloud).lerp(warmCloud, sunset).lerp(nightCloud, night);
@@ -622,6 +629,8 @@ const CAMPUS_COLLISION_TOP = 12;
 const COLLISION_CELL_SIZE = 6;
 const obstacleGrid = new Map();
 const wallGrid = new Map();
+const cameraSurfaceGrid = new Map();
+const campusRoofs = [];
 const playerCollisionBox = new THREE.Box3();
 const classroomFurniture = [];
 let fountainEffectGroup = null;
@@ -630,14 +639,7 @@ let fountainRipples = [];
 let fountainMistMesh = null;
 let fountainMistParticles = [];
 let fountainSource = null;
-let drag = false;
-let lastPointer = null;
-let pointerOrigin = null;
-let pointerMoved = false;
-let lookingPointer = null;
 let introducedByGuard = false;
-let cameraDistance = 7.5;
-let cameraLift = 3.2;
 let toastTimer = 0;
 let profile = null;
 let playerWasNearPrincipal = false;
@@ -667,7 +669,7 @@ const activities = createCampusActivities({
   floor: findWalkSurface,
   collides: collidesAt,
   playerBox: setPlayerCollisionBox,
-  positionCamera: () => positionOutdoorView(2.7),
+  positionCamera: () => cameraController.placeThirdPerson(2.7),
   outdoorOpen: point => pointInBoundary(point.x, point.z) && !collidesAt(point.x, point.z, point.y),
   notice: showToast,
   pickupClearance,
@@ -676,7 +678,6 @@ const activities = createCampusActivities({
     if (!avatar) return;
     walker.yaw = Math.atan2(walker.x - position.x, walker.z - position.z);
     avatar.rotation.y = walker.yaw + Math.PI;
-    positionOutdoorView();
   },
   mobile, sound,
   openTravel: () => campusMap.open()
@@ -684,7 +685,7 @@ const activities = createCampusActivities({
 const campusMap = createCampusMap({
   active: () => started,
   player: () => avatar.position,
-  yaw: () => walker.yaw,
+  yaw: () => cameraController.yaw,
   indoors: () => activities.insideClassroom,
   players: () => remotePlayers,
   canOpen: () => !activities.blocksMovement,
@@ -698,7 +699,7 @@ const campusMap = createCampusMap({
     activities.teleportToMap(point, angle);
     avatar.position.set(walker.x, walker.y, walker.z);
     avatar.rotation.y = angle + Math.PI;
-    positionOutdoorView();
+    cameraController.firstFrame();
   },
   notice: showToast
 });
@@ -707,6 +708,36 @@ const presence = createPresencePanel({
   badges: document.querySelectorAll('[data-presence-count]'), resetInput: resetPlayerInput,
   canOpen: () => started && !campusMap.blocking && !activities.blocksMovement && !document.querySelector('dialog[open]')
 });
+const cameraButtons = [$('#cameraToggle'), $('#mobileCameraToggle')];
+const hudChat = $('#chatPanel');
+const cameraController = new CameraController({
+  camera, canvas: renderer.domElement, walker, getAvatar: () => avatar,
+  getRoomOrigin: () => activities.cameraRoomOrigin,
+  canLook: () => started && !campusMap.blocking && !presence.open && hudChat.hidden && !activities.blocksMovement,
+  onTap: (x, y) => activities.click(x, y),
+  roofHeight(x, z) {
+    let height = -Infinity;
+    for (const { min, max } of campusRoofs) {
+      if (x >= min.x && x <= max.x && z >= min.z && z <= max.z) height = Math.max(height, max.y);
+    }
+    return height;
+  },
+  trace: createCameraProbe({
+    cellSize: COLLISION_CELL_SIZE, cellKey: collisionCellKey, wallGrid, surfaceGrid: cameraSurfaceGrid, obstacleGrid,
+    traceDoors: activities.classrooms.traceCameraDoors
+  }),
+  onModeChanged(mode, busy) {
+    const label = CAMERA_VIEWS[mode].label;
+    for (const button of cameraButtons) {
+      button.dataset.cameraMode = mode;
+      button.title = `${label} · Đổi góc nhìn (V)`;
+      button.setAttribute('aria-label', `${label}. Đổi góc nhìn`);
+      button.querySelector('.camera-label').textContent = label;
+      button.disabled = busy;
+    }
+  }
+});
+for (const button of cameraButtons) button.addEventListener('click', () => cameraController.cycleMode());
 const traffic = createCampusTraffic({
   scene, walker, sound,
   qualifies: () => activities.trafficWarningActive && !campusMap.blocking && !activities.blocksMovement && !activities.insideClassroom,
@@ -766,7 +797,7 @@ function isPerimeterFence(object) {
   return false;
 }
 
-function indexWallTriangles(object, maxCollisionY = CAMPUS_COLLISION_TOP) {
+function indexCollisionTriangles(object, walkingWalls, maxCollisionY, cameraSurface) {
   const { index, attributes: { position } } = object.geometry;
   if (!position) return;
   const vertices = Array.from({ length: position.count }, (_, i) =>
@@ -779,13 +810,17 @@ function indexWallTriangles(object, maxCollisionY = CAMPUS_COLLISION_TOP) {
     const a = vertices[index ? index.getX(i) : i];
     const b = vertices[index ? index.getX(i + 1) : i + 1];
     const c = vertices[index ? index.getX(i + 2) : i + 2];
-    if (Math.max(a.y, b.y, c.y) < .05 || Math.min(a.y, b.y, c.y) > maxCollisionY) continue;
+    if (Math.max(a.y, b.y, c.y) < .05) continue;
     normal.subVectors(b, a).cross(edge.subVectors(c, a));
     const normalLengthSquared = normal.lengthSq();
     // Walkable slopes, floors and flat undersides are handled by the ground probe.
-    if (normalLengthSquared === 0 || normal.y ** 2 >= .62 ** 2 * normalLengthSquared) continue;
+    if (normalLengthSquared === 0) continue;
+    const wall = walkingWalls && Math.min(a.y, b.y, c.y) <= maxCollisionY
+      && normal.y ** 2 < .62 ** 2 * normalLengthSquared;
+    if (!wall && !cameraSurface) continue;
+    const grid = wall ? wallGrid : cameraSurfaceGrid;
     const box = new THREE.Box3().setFromPoints([a, b, c]);
-    const wall = { box, triangle: new THREE.Triangle(a, b, c) };
+    const entry = { box, triangle: new THREE.Triangle(a, b, c) };
     const left = Math.floor((box.min.x - PLAYER_RADIUS) / COLLISION_CELL_SIZE);
     const right = Math.floor((box.max.x + PLAYER_RADIUS) / COLLISION_CELL_SIZE);
     const top = Math.floor((box.min.z - PLAYER_RADIUS) / COLLISION_CELL_SIZE);
@@ -793,8 +828,8 @@ function indexWallTriangles(object, maxCollisionY = CAMPUS_COLLISION_TOP) {
     for (let x = left; x <= right; x++) {
       for (let z = top; z <= bottom; z++) {
         const key = collisionCellKey(x, z);
-        if (!wallGrid.has(key)) wallGrid.set(key, []);
-        wallGrid.get(key).push(wall);
+        if (!grid.has(key)) grid.set(key, []);
+        grid.get(key).push(entry);
       }
     }
   }
@@ -863,11 +898,14 @@ function buildCampusColliders(campus) {
     if (!perimeter && (isCampusFloorMesh(obj) || (horizontalSpan > .35 && size.y <= Math.max(.65, horizontalSpan * .3)))) {
       indexWalkableMesh(obj, box);
     }
-    if (perimeter || blocksWalking(box, size)) {
-      const treeBaseOnly = /trunk[\s_]+and[\s_]+branches/i.test(obj.name);
-      const top = treeBaseOnly ? Math.min(CAMPUS_COLLISION_TOP, box.min.y + 2.5) : CAMPUS_COLLISION_TOP;
-      indexWallTriangles(obj, top);
-    }
+    const tree = /trunk[\s_]+and[\s_]+branches/i.test(obj.name);
+    const roof = /roof|canopy|ceiling|MaiNha/i.test(obj.name) && box.min.y > 1.5;
+    if (roof) campusRoofs.push(box);
+    const walkingWalls = perimeter || blocksWalking(box, size);
+    const cameraSurface = tree || roof || isCampusFloorMesh(obj);
+    if (!walkingWalls && !cameraSurface) return;
+    const top = tree ? Math.min(CAMPUS_COLLISION_TOP, box.min.y + 2.5) : CAMPUS_COLLISION_TOP;
+    indexCollisionTriangles(obj, walkingWalls, top, cameraSurface);
   });
 }
 
@@ -1366,13 +1404,15 @@ function collectClearDayCasters(campus) {
 function updateCampusShadows(time) {
   if (!started || time < nextShadowUpdate) return;
   const clearAmount = currentDay.clearSky;
+  fitSunShadowCamera(clearAmount, cameraController.overviewWeight);
   const naturalShadows = clearAmount > .015;
   const outside = !activities.insideClassroom;
   nextShadowUpdate = time + (naturalShadows ? (mobile ? CLEAR_DAY_SHADOWS.mobileInterval : CLEAR_DAY_SHADOWS.desktopInterval) : .18);
   const target = sun.target.position.set(walker.x, walker.y, walker.z);
   if (naturalShadows) {
-    target.x -= Math.sin(walker.yaw) * CLEAR_DAY_SHADOWS.lookAhead * clearAmount;
-    target.z -= Math.cos(walker.yaw) * CLEAR_DAY_SHADOWS.lookAhead * clearAmount;
+    const lookAhead = CLEAR_DAY_SHADOWS.lookAhead * clearAmount * (1 - cameraController.overviewWeight * .65);
+    target.x -= Math.sin(walker.yaw) * lookAhead;
+    target.z -= Math.cos(walker.yaw) * lookAhead;
     shadowSide.crossVectors(worldUp, sunDirection).normalize();
     shadowUp.crossVectors(sunDirection, shadowSide).normalize();
     const texelX = (sun.shadow.camera.right - sun.shadow.camera.left) / sun.shadow.mapSize.x;
@@ -2875,14 +2915,17 @@ function updateRemotePlayers(dt,time) {
     }
     const anchor=projectedLabel.copy(remote.root.position).setY(remote.root.position.y + 2.12).project(camera);
     const onScreen=anchor.z>-1&&anchor.z<1&&anchor.x>-1.15&&anchor.x<1.15&&anchor.y>-1.1&&anchor.y<1.1;
-    remote.nameTag.hidden=!started||!onScreen;
+    const tagOpacity = 1 - cameraController.overviewWeight * THREE.MathUtils.smoothstep(remote.root.position.distanceToSquared(camera.position), 45 ** 2, 72 ** 2);
+    remote.nameTag.hidden=!started||!onScreen||tagOpacity < .025;
     if(onScreen){
       remote.nameTag.style.left=`${(anchor.x*0.5+0.5)*innerWidth}px`;
       remote.nameTag.style.top=`${(-anchor.y*0.5+0.5)*innerHeight}px`;
+      remote.nameTag.style.opacity=tagOpacity;
     }
     updatePlayerChatBubble(remote.chatBubble,remote.root,remote.chatUntil,bubbleNow);
   }
-  updatePlayerChatBubble(localChatBubble,avatar,localChatUntil,bubbleNow);
+  if (localChatBubble && cameraController.firstPersonHidden) localChatBubble.hidden = true;
+  else updatePlayerChatBubble(localChatBubble,avatar,localChatUntil,bubbleNow);
 }
 
 function disconnectRoom(beacon = false) {
@@ -2911,6 +2954,7 @@ function disconnectRoom(beacon = false) {
 function openChatPanel() {
   const panel=$('#chatPanel');
   panel.hidden=false;
+  cameraController.cancelLook();
   $('#chatToggle').setAttribute('aria-expanded','true');
   $('#mobileChatQuick').setAttribute('aria-expanded','true');
   clearChatUnread();
@@ -3164,6 +3208,7 @@ $('#profileForm').addEventListener('submit', event => {
   $('#mobileMenu').hidden = !mobile;
   document.body.classList.add('campus-started');
   avatar.position.set(walker.x, walker.y, walker.z);
+  cameraController.firstFrame();
   campusMap.start();
   $('#chatToggle').hidden=false;
   showToast(`Chào mừng ${name} đến với trường Nguyễn Khuyến!`);
@@ -3186,7 +3231,7 @@ for (const id of ['shirt','tucked','pants','bag','footwear','gender']) {
 
 $('#mapBtn').addEventListener('click', () => campusMap.toggle());
 $('#editBtn').addEventListener('click', () => {
-  keys.clear();
+  resetPlayerInput();
   started = false;
   campusMap.stop();
   activities.horseDialogue.reset();
@@ -3213,14 +3258,21 @@ $('#editBtn').addEventListener('click', () => {
 });
 
 window.addEventListener('keydown', event => {
+  if (event.code === 'Escape') cameraController.cancelLook();
   if (presence.open) return;
-  if (event.target instanceof HTMLInputElement || event.target instanceof HTMLSelectElement || event.target instanceof HTMLTextAreaElement) return;
+  if (event.target instanceof HTMLElement && event.target.closest('input, select, textarea, [contenteditable]:not([contenteditable="false"])')) return;
   if (event.code === 'KeyM' && started && !event.repeat) {
     event.preventDefault();
     campusMap.toggle();
     return;
   }
   if (campusMap.blocking || (started && activities.handleKey(event))) return;
+  if (event.code === 'KeyV' && started && !event.repeat) {
+    if (!hudChat.hidden || event.ctrlKey || event.altKey || event.metaKey) return;
+    event.preventDefault();
+    cameraController.cycleMode();
+    return;
+  }
   if (event.code === 'Space') {
     if (!started) return;
     event.preventDefault();
@@ -3241,48 +3293,11 @@ jumpButton.addEventListener('click', jumpPlayer);
 window.addEventListener('keyup', event => keys.delete(event.code));
 window.addEventListener('blur', () => { keys.clear(); moveStick.set(0, 0); });
 
-renderer.domElement.addEventListener('pointerdown', event => {
-  if (!started || campusMap.blocking || activities.blocksMovement || event.button !== 0 || drag) return;
-  drag = true;
-  pointerMoved = false;
-  lookingPointer = event.pointerId;
-  pointerOrigin = lastPointer = { x:event.clientX, y:event.clientY };
-  renderer.domElement.setPointerCapture(event.pointerId);
-});
-renderer.domElement.addEventListener('pointermove', event => {
-  if (!drag || !lastPointer || event.pointerId !== lookingPointer) return;
-  if (!pointerMoved && Math.hypot(event.clientX - pointerOrigin.x, event.clientY - pointerOrigin.y) < 6) return;
-  pointerMoved = true;
-  const dx = event.clientX - lastPointer.x;
-  const dy = event.clientY - lastPointer.y;
-  walker.yaw -= dx * 0.005;
-  cameraLift = THREE.MathUtils.clamp(cameraLift + dy * 0.015, 1.6, 6.2);
-  lastPointer = { x:event.clientX, y:event.clientY };
-});
-const releasePointer = event => {
-  if (event.pointerId !== lookingPointer) return;
-  drag = false; lastPointer = null; lookingPointer = null;
-};
-
 function resetPlayerInput() {
   keys.clear();
   moveStick.set(0, 0);
-  if (lookingPointer !== null && renderer.domElement.hasPointerCapture(lookingPointer)) {
-    renderer.domElement.releasePointerCapture(lookingPointer);
-  }
-  drag = false;
-  lastPointer = null;
-  lookingPointer = null;
+  cameraController.cancelLook();
 }
-renderer.domElement.addEventListener('pointerup', event => {
-  if (drag && !pointerMoved && event.pointerId === lookingPointer) activities.click(event.clientX, event.clientY);
-  releasePointer(event);
-});
-renderer.domElement.addEventListener('pointercancel', releasePointer);
-renderer.domElement.addEventListener('wheel', event => {
-  if (activities.horseDialogue.modalOpen) return;
-  cameraDistance = THREE.MathUtils.clamp(cameraDistance + Math.sign(event.deltaY)*0.7, 4.5, 13);
-}, { passive:true });
 
 if (mobile && window.nipplejs) {
   const joystick = window.nipplejs.create({
@@ -3309,6 +3324,7 @@ menuItems.addEventListener('click', event => {
   const button = event.target.closest('button[data-menu]');
   if (!button) return;
   closeMobileMenu();
+  if (button === cameraButtons[1]) return;
   keys.clear();
   moveStick.set(0, 0);
   if (button.dataset.menu === 'travel') activities.openTravel();
@@ -3388,17 +3404,6 @@ function movePlayer(dt, time) {
     avatar.userData.arms[0].rotation.x = -armSwing;
     avatar.userData.arms[1].rotation.x = armSwing;
   }
-  if (activities.insideClassroom) {
-    activities.positionClassroomCamera(cameraForward.set(-Math.sin(walker.yaw), 0, -Math.cos(walker.yaw)));
-    return;
-  }
-  positionOutdoorView();
-}
-
-function positionOutdoorView(distance = cameraDistance) {
-  const f = cameraForward.set(-Math.sin(walker.yaw), 0, -Math.cos(walker.yaw));
-  camera.position.set(walker.x - f.x * distance, cameraLift + walker.y, walker.z - f.z * distance);
-  camera.lookAt(walker.x, 1.12 + walker.y, walker.z);
 }
 
 const clock = new THREE.Clock();
@@ -3433,8 +3438,14 @@ renderer.setAnimationLoop(() => {
     sound.applyAmbience();
   }
   animateClouds(clock.elapsedTime);
+  if (started) {
+    if (activities.cameraOverride) cameraController.suspend();
+    else cameraController.update(dt);
+  }
   activities.update(dt, clock.elapsedTime, started);
+  camera.updateMatrixWorld();
   lighting.frame(performance.now());
+  scene.fog.density = campusFogDensity * (started ? cameraController.fogFactor : 1);
   traffic.update(dt, currentDay.night, started);
   if (lighting.fadeStart === null && currentDay.lamps > .002) updateNightLights();
   if (fountainEffectGroup) {

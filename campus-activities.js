@@ -664,7 +664,8 @@ export function createCampusActivities({ scene, camera, renderer, walker, keys, 
       camera.lookAt(center);
       return;
     }
-    // Tight spaces use the existing camera position with the group re-centered.
+    // Back out of the player's eye position if the portrait angle is obstructed.
+    if (camera.position.distanceToSquared(subject) < 4) positionCamera();
     camera.lookAt(center);
   }
 
@@ -1124,19 +1125,12 @@ export function createCampusActivities({ scene, camera, renderer, walker, keys, 
     revealSecretClue: secret.revealClue, secretProfileChanged: secret.profileChanged,
     get trafficWarningActive() { return secret.trafficWarningActive; },
     get blocksMovement() { return Boolean(captured || seated || classrooms.blocked || ceremony || dialog.open || horseDialogue.modalOpen || flowers.giving || secret.climbing); },
+    get cameraOverride() { return Boolean(captured || seated || classrooms.blocked || ceremony || secret.climbing); },
     get chilling() { return Boolean(seated); },
     get activeIncenseLights() { return activeIncenseLights; },
     get insideClassroom() { return indoors; },
+    get cameraRoomOrigin() { return indoors ? room.origin : null; },
     floorY() { return room.origin.y; },
-    positionClassroomCamera(forward) {
-      const origin = room.origin;
-      camera.position.set(
-        THREE.MathUtils.clamp(walker.x - forward.x * 2.6, origin.x - 4.75, origin.x + 4.75),
-        walker.y + 2.35,
-        THREE.MathUtils.clamp(walker.z - forward.z * 2.6, origin.z - 5.77, origin.z + 5.77)
-      );
-      camera.lookAt(walker.x + forward.x, walker.y + 1.42, walker.z + forward.z);
-    },
     canMove(x, z) {
       const origin = room.origin;
       if (Math.abs(x - origin.x) > 4.62 || Math.abs(z - origin.z) > 5.64) return false;

@@ -22,6 +22,10 @@
     <button id="chatToggle" class="pill" type="button" aria-expanded="false" aria-controls="chatPanel">💬 Chat<span id="onlineCount" hidden>0</span><span id="chatUnread" class="chat-unread" aria-label="Tin nhắn chưa đọc" hidden>0</span></button>
     <button id="presenceToggle" class="pill" type="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="presenceDialog"><span aria-hidden="true">👥</span> Online <span class="presence-count" data-presence-count>0</span></button>
     <button id="musicMenu" class="pill" type="button" aria-label="Âm thanh">🎵</button>
+    <button id="cameraToggle" class="pill camera-toggle" type="button" aria-keyshortcuts="V" aria-label="Đổi góc nhìn">
+      <svg class="camera-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path class="camera-eye" d="M2 12s3.6-5.5 10-5.5S22 12 22 12s-3.6 5.5-10 5.5S2 12 2 12Z"/><circle cx="12" cy="12" r="2.5"/><path class="camera-frame" d="M2 7V3h4m12 0h4v4m0 10v4h-4m-12 0H2v-4"/></svg>
+      <span class="camera-label"></span><kbd aria-hidden="true">V</kbd>
+    </button>
     <button id="editBtn" class="pill" type="button">Đổi nhân vật</button>
   </header>
 
@@ -85,6 +89,10 @@
       <button type="button" data-menu="chat">💬 <span>Chat</span><span id="mobileMenuChatUnread" class="chat-unread" aria-label="Tin nhắn chưa đọc" hidden>0</span></button>
       <button type="button" id="mobilePresenceToggle" data-menu="online" aria-haspopup="dialog" aria-expanded="false" aria-controls="presenceDialog">👥 <span>Online</span> <span class="presence-count" data-presence-count>0</span></button>
       <button type="button" data-menu="music">🎵 <span>Nhạc nền</span></button>
+      <button type="button" id="mobileCameraToggle" data-menu="camera" class="camera-toggle" aria-keyshortcuts="V" aria-label="Đổi góc nhìn">
+        <svg class="camera-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path class="camera-eye" d="M2 12s3.6-5.5 10-5.5S22 12 22 12s-3.6 5.5-10 5.5S2 12 2 12Z"/><circle cx="12" cy="12" r="2.5"/><path class="camera-frame" d="M2 7V3h4m12 0h4v4m0 10v4h-4m-12 0H2v-4"/></svg>
+        <span class="camera-label"></span>
+      </button>
     </div>
   </nav>
   <button id="mobileChatQuick" type="button" aria-label="Mở chat" aria-expanded="false" aria-controls="chatPanel" hidden>💬<span id="mobileChatUnread" class="chat-unread" aria-label="Tin nhắn chưa đọc" hidden>0</span></button>
