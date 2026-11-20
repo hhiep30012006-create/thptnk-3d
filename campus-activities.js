@@ -66,7 +66,6 @@ export function createCampusActivities({ scene, camera, renderer, walker, keys, 
   let room;
   let indoors = false;
   let returnPoint;
-  let boardText = '';
   let boardCanvas;
   let boardTexture;
   let ripples;
@@ -90,7 +89,9 @@ export function createCampusActivities({ scene, camera, renderer, walker, keys, 
   });
   const flowers = createFlowerQuest({ scene, walker, getPlayer, getProfile, floor, outdoorOpen, pickupClearance, sound, addTarget, notice, complete, showOptions, setFace });
   const classrooms = createClassroomSystems({ walker, getPlayer, getRoom, post, floor, collides, notice, resetInput, positionCamera, playerBox, stand, sound,
-    openDialog(heading) { openDialog(heading); return { dialog, content }; } });
+    openDialog(heading) { openDialog(heading); return { dialog, content }; },
+    onBoardSaved: () => complete('classroom') });
+  const practiceBoard = classrooms.registerPracticeBoard(drawBoard);
   dialog.querySelector('.campus-close').onclick = () => dialog.close();
   dialog.addEventListener('close', () => {
     viewingNotes++;
@@ -311,8 +312,8 @@ export function createCampusActivities({ scene, camera, renderer, walker, keys, 
     const chalk = new THREE.Mesh(new THREE.PlaneGeometry(5.1, 1.98), new THREE.MeshBasicMaterial({ map: boardTexture }));
     chalk.position.set(0, 2.1, -5.75);
     interior.add(chalk);
-    drawBoard(boardText);
-    addTarget(chalkFrame, '[E] Viết bảng', 4, openChalk, { indoor: true, key: 'KeyE', clickable: true, icon: '✍️' });
+    drawBoard(practiceBoard);
+    addTarget(chalkFrame, '[E] Viết bảng', 4, () => classrooms.editBoard(practiceBoard), { indoor: true, key: 'KeyE', clickable: true, icon: '✍️' });
 
     const fanSwitch = mesh(interior, [.19, .28, .08], vector(-1.19, 1.52, 5.86), 0x945626);
     const lightSwitch = mesh(interior, [.19, .28, .08], vector(-1.49, 1.52, 5.86), 0xffe2a4);
@@ -473,26 +474,29 @@ export function createCampusActivities({ scene, camera, renderer, walker, keys, 
     if (player) player.visible = true;
   }
 
-  function drawBoard(text) {
-    boardText = text;
+  function drawBoard({ text, color }) {
     if (!boardCanvas) return;
     const ctx = boardCanvas.getContext('2d');
     ctx.fillStyle = '#244839';
     ctx.fillRect(0, 0, boardCanvas.width, boardCanvas.height);
     ctx.font = '42px system-ui';
-    ctx.fillStyle = '#f4edcf';
-    const tokens = text.split(' ').flatMap(word => word.match(/.{1,24}/gu) || []);
-    let line = '';
+    ctx.fillStyle = color;
     let y = 86;
-    for (const token of tokens) {
-      if (line && ctx.measureText(line + ' ' + token).width > 914) {
-        ctx.fillText(line, 54, y, 914);
-        y += 53;
-        line = '';
+    for (const paragraph of text.split('\n')) {
+      const tokens = paragraph.split(/\s+/).flatMap(word => word.match(/.{1,24}/gu) || []);
+      let line = '';
+      for (const token of tokens) {
+        if (line && ctx.measureText(line + ' ' + token).width > 914) {
+          if (y <= 380) ctx.fillText(line, 54, y, 914);
+          y += 53;
+          line = '';
+        }
+        line += (line ? ' ' : '') + token;
       }
-      line += (line ? ' ' : '') + token;
+      if (line && y <= 380) ctx.fillText(line, 54, y, 914);
+      y += 53;
+      if (y > 380) break;
     }
-    if (line) ctx.fillText(line, 54, y, 914);
     boardTexture.needsUpdate = true;
   }
 
@@ -533,22 +537,6 @@ export function createCampusActivities({ scene, camera, renderer, walker, keys, 
       catch (cause) { error.textContent = cause.message; }
       finally { button.disabled = false; }
     };
-  }
-
-  function openChalk() {
-    openDialog('Bảng xanh lớp C1');
-    const form = document.createElement('form');
-    field(form, 'Dòng chữ phấn', 'text', 120, true).value = boardText;
-    submit(form, 'Viết lên bảng', async data => {
-      const id = requireRoom();
-      await post('/api/move', { id, position: walker });
-      const result = await post('/api/classroom/board', { id, text: data.get('text') });
-      drawBoard(result.text);
-      sound.effect('chalk');
-      complete('classroom');
-      dialog.close();
-    });
-    content.append(form);
   }
 
   function requireRoom() {
@@ -1115,7 +1103,7 @@ export function createCampusActivities({ scene, camera, renderer, walker, keys, 
   }
 
   return {
-    init, update, click, handleKey, drawBoard, openTravel, openProgress, openAudio, registerNpc, registerGateHorse, talk,
+    init, update, click, handleKey, openTravel, openProgress, openAudio, registerNpc, registerGateHorse, talk,
     classrooms,
     leaveSeat, horseDialogue,
     teleportToMap(point, yaw) { teleport(point, yaw, false); },

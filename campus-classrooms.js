@@ -14,10 +14,16 @@ export const classroomConfig = Object.freeze({
 const CELL = 6;
 const UP = new THREE.Vector3(0, 1, 0);
 const WHITE = '#fff5dc';
+const PRACTICE_BOARD = 'practice-c1';
+const BOARD_PREVIEW_MS = 220;
+const BOARD_KEEPALIVE_MS = 40_000;
+const CHALK_REQUEST_TIMEOUT_MS = 5000;
+const BOARD_PROMPT_PRIORITY_RADIUS = 1.35;
 const chairHitGeometry = new THREE.BoxGeometry(.44, .6, .44);
 const chairHitMaterial = new THREE.MeshBasicMaterial();
 const smooth = t => t * t * (3 - 2 * t);
 const originalName = object => object.userData.name || object.userData.detailedCampusName || object.name;
+const boardId = name => name.toLowerCase().replace(/[^a-z0-9]+/g, '-');
 const cellKey = (x, z) => x * 4096 + z;
 const angleBetween = (from, to) => Math.atan2(Math.sin(to - from), Math.cos(to - from));
 
@@ -30,11 +36,12 @@ export function setDeskPose(avatar, amount) {
 }
 
 export function createClassroomSystems({ walker, getPlayer, getRoom, post, floor, collides, notice, resetInput,
-  positionCamera, playerBox, openDialog, stand, sound }) {
+  positionCamera, playerBox, openDialog, stand, sound, onBoardSaved }) {
   const doorGrid = new Map();
   const targetGrid = new Map();
   const movingDoors = new Set();
   const nearbyTargets = [];
+  const boards = new Map();
   const scratch = new THREE.Vector3();
   const hitBox = new THREE.Box3();
   const rotation = new THREE.Matrix4();
@@ -44,6 +51,7 @@ export function createClassroomSystems({ walker, getPlayer, getRoom, post, floor
   let seating;
   let pending;
   let pose = 0;
+  let activeEditor;
 
   function index(grid, point, item) {
     const key = cellKey(Math.floor(point.x / CELL), Math.floor(point.z / CELL));
@@ -281,7 +289,14 @@ export function createClassroomSystems({ walker, getPlayer, getRoom, post, floor
     pose = 0;
   }
 
-  function addBoard(object, desks) {
+  function registerBoard(id, fields) {
+    const shared = { id, text: '', color: WHITE, revision: -1 };
+    const board = { ...fields, id, shared, text: shared.text, color: shared.color };
+    boards.set(id, board);
+    return board;
+  }
+
+  function addBoard(object, desks, name) {
     const face = object.children.find(child => /chalkboard enamel/i.test(child.material?.name ?? ''));
     if (!face || !desks.length) return;
     face.userData.classroomSurface = true;
@@ -292,10 +307,11 @@ export function createClassroomSystems({ walker, getPlayer, getRoom, post, floor
     const normal = new THREE.Vector3(0, 0, 1).transformDirection(face.matrixWorld);
     if (scratch.copy(desks[0].getWorldPosition(new THREE.Vector3())).sub(point).dot(normal) < 0) normal.negate();
     const front = scratch.set(0, 0, 1).transformDirection(face.matrixWorld).dot(normal) > 0 ? 1 : -1;
-    const board = { face, box, center, front, text: '', color: WHITE };
+    const board = registerBoard(boardId(name), { face, box, center, front, title: 'Viết bảng đen · ' + name.split(' • ').at(-1) });
     point.y -= 1;
     index(targetGrid, point, { object, point, label: '[E] Viết bảng đen', key: 'KeyE', icon: '✍️',
-      range: classroomConfig.boardRadius, priority: () => 1,
+      range: classroomConfig.boardRadius,
+      priority: () => Math.hypot(point.x - walker.x, point.z - walker.z) < BOARD_PROMPT_PRIORITY_RADIUS ? 2 : 1,
       available() {
         const dx = point.x - walker.x, dz = point.z - walker.z;
         const length = Math.hypot(dx, dz);
@@ -348,10 +364,41 @@ export function createClassroomSystems({ walker, getPlayer, getRoom, post, floor
     board.texture.needsUpdate = true;
   }
 
+  function renderBoard(board, { text, color }) {
+    if (board.text === text && board.color === color) return;
+    Object.assign(board, { text, color });
+    if (board.draw) board.draw(board);
+    else if (text || board.canvas) paintBoard(board);
+  }
+
+  function syncBoard(state) {
+    const board = boards.get(state?.id);
+    if (!board || state.revision < board.shared.revision) return;
+    board.shared = state;
+    // A delayed preview acknowledgment must not replace newer local keystrokes.
+    if (activeEditor?.board === board) {
+      if (activeEditor.writing) return;
+      activeEditor.follow(state);
+    }
+    renderBoard(board, state);
+  }
+
+  function restoreBoards(snapshot) {
+    activeEditor?.dialog.close();
+    activeEditor = undefined;
+    const states = new Map(snapshot.map(state => [state.id, state]));
+    for (const board of boards.values()) {
+      board.shared = states.get(board.id) ?? { id: board.id, text: '', color: WHITE, revision: -1 };
+      renderBoard(board, board.shared);
+    }
+  }
+
   function editBoard(board) {
-    const { dialog, content } = openDialog('Viết bảng đen');
+    const { dialog, content } = openDialog(board.title);
+    const id = getRoom().id;
+    const sameRoom = () => getRoom().id === id;
+    const request = (action, fields = {}) => post('/api/classroom/board', { id, boardId: board.id, action, ...fields }, AbortSignal.timeout(CHALK_REQUEST_TIMEOUT_MS));
     resetInput();
-    const previous = { text: board.text, color: board.color };
     const editor = document.createElement('textarea');
     editor.setAttribute('aria-label', 'Nội dung trên bảng');
     editor.placeholder = 'Nhập nội dung viết phấn…';
@@ -362,24 +409,118 @@ export function createClassroomSystems({ walker, getPlayer, getRoom, post, floor
     color.setAttribute('aria-label', 'Màu phấn');
     color.append(new Option('Trắng kem', WHITE), new Option('Xanh nhạt', '#c6e8f9'), new Option('Hồng nhạt', '#ffd4db'));
     color.value = board.color;
+    const session = { board, dialog, writing: !id, follow(state) { editor.value = state.text; color.value = state.color; } };
+    activeEditor = session;
     const clear = document.createElement('button');
     clear.textContent = 'Xóa bảng';
     const done = document.createElement('button');
     done.textContent = 'Xong';
+    const status = document.createElement('p');
+    status.setAttribute('role', 'status');
+    const sharedHint = 'Người chơi cùng phòng thấy nội dung bạn đang viết.';
+    const setDisabled = disabled => { editor.disabled = color.disabled = clear.disabled = done.disabled = disabled; };
+    const draft = () => ({ text: editor.value, color: color.value });
+    let token;
+    let timer;
+    let keepalive;
+    let preview;
+    let save;
+    let closed = false;
     let saved = false;
-    const update = () => { board.text = editor.value; board.color = color.value; paintBoard(board); };
-    editor.oninput = update;
+
+    function schedulePreview() {
+      if (!token || timer || closed || save || !sameRoom()) return;
+      timer = setTimeout(sendPreview, BOARD_PREVIEW_MS);
+    }
+
+    function sendPreview() {
+      timer = undefined;
+      if (!token || preview || closed || save || !sameRoom()) return;
+      const sent = draft();
+      preview = request('preview', { token, ...sent }).then(result => {
+        if (sameRoom()) syncBoard(result.board);
+        if (!closed) status.textContent = sharedHint;
+      }).catch(error => {
+        if (!closed) status.textContent = error.message;
+      }).finally(() => {
+        preview = undefined;
+        if (sent.text !== editor.value || sent.color !== color.value) schedulePreview();
+      });
+    }
+
+    const update = () => { renderBoard(board, draft()); schedulePreview(); };
+    editor.oninput = event => { if (!event.isComposing) update(); };
+    editor.oncompositionend = update;
     color.onchange = update;
     clear.onclick = () => { editor.value = ''; update(); };
-    done.onclick = () => { saved = true; dialog.close(); sound.effect('chalk'); };
-    dialog.addEventListener('close', () => {
-      if (!saved) { Object.assign(board, previous); if (board.canvas) paintBoard(board); }
+
+    const opening = id ? (async () => {
+      setDisabled(true);
+      status.textContent = 'Đang kết nối bảng…';
+      try {
+        if (board.id === PRACTICE_BOARD) await post('/api/move', { id, position: walker }, AbortSignal.timeout(CHALK_REQUEST_TIMEOUT_MS));
+        const result = await request('edit');
+        token = result.token;
+        if (!sameRoom()) return;
+        syncBoard(result.board);
+        if (closed) return;
+        session.writing = true;
+        setDisabled(false);
+        status.textContent = sharedHint;
+        editor.focus();
+        keepalive = setInterval(schedulePreview, BOARD_KEEPALIVE_MS);
+      } catch (error) {
+        if (!closed) status.textContent = error.message;
+      }
+    })() : Promise.resolve();
+
+    done.onclick = () => {
+      if (save) return;
+      clearTimeout(timer);
+      timer = undefined;
+      const fields = draft();
+      setDisabled(true);
+      save = (async () => {
+        await preview;
+        if (!sameRoom()) throw new Error('Phòng chơi đã ngắt. Hãy mở lại bảng.');
+        if (id) {
+          const result = await request('save', { token, ...fields });
+          if (sameRoom()) syncBoard(result.board);
+        } else board.shared = { ...board.shared, ...fields };
+        saved = true;
+        sound.effect('chalk');
+        onBoardSaved();
+        if (!closed) dialog.close();
+      })().catch(error => { if (!closed) status.textContent = error.message; }).finally(() => {
+        save = undefined;
+        if (!closed) setDisabled(false);
+      });
+    };
+
+    dialog.addEventListener('close', async () => {
+      closed = true;
+      clearTimeout(timer);
+      clearInterval(keepalive);
+      if (activeEditor === session) activeEditor = undefined;
+      await opening;
+      await save;
+      await preview;
+      if (!saved && token) {
+        try {
+          const result = await request('cancel', { token });
+          if (sameRoom()) syncBoard(result.board);
+        } catch { /* A closed or disconnected room releases the edit on the server. */ }
+      }
+      if (sameRoom() && activeEditor?.board !== board) renderBoard(board, board.shared);
     }, { once: true });
     const controls = document.createElement('div');
     controls.className = 'classroom-board-controls';
     controls.append(color, clear, done);
-    content.append(editor, controls);
-    editor.focus();
+    content.append(editor, controls, status);
+    if (!id) {
+      status.textContent = 'Chưa kết nối phòng. Chữ viết chỉ hiện trên máy của bạn.';
+      editor.focus();
+    }
   }
 
   function prepare(campus) {
@@ -404,12 +545,13 @@ export function createClassroomSystems({ walker, getPlayer, getRoom, post, floor
         const chair = objects.get(`Chair ${kind.slice(5)}`);
         if (chair) addSeat(chair, object, `${name}-${kind}`);
       }
-      if (objects.has('Blackboard')) addBoard(objects.get('Blackboard'), desks);
+      if (objects.has('Blackboard')) addBoard(objects.get('Blackboard'), desks, name);
     }
   }
 
   return {
-    prepare, collidesDoor, traceCameraDoors, standUp, reset,
+    prepare, collidesDoor, traceCameraDoors, standUp, reset, syncBoard, restoreBoards, editBoard,
+    registerPracticeBoard: draw => registerBoard(PRACTICE_BOARD, { draw, title: 'Bảng xanh lớp C1' }),
     targetsNear() { nearbyTargets.length = 0; nearby(targetGrid, walker.x, walker.z, target => { nearbyTargets.push(target); }); return nearbyTargets; },
     update(dt, active) { updateDoors(dt, active); if (active) updateSeat(dt); },
     get blocked() { return Boolean(seating || pending); },

@@ -14,6 +14,12 @@ const PORT = Number(process.env.PORT || 3000);
 const SERVER_STARTED_AT = Date.now();
 const clients = new Map();
 const classroomBoards = new Map();
+const PRACTICE_BOARD = 'practice-c1';
+const CHALK_COLORS = new Set(['#fff5dc', '#c6e8f9', '#ffd4db']);
+const BOARD_TEXT_LIMIT = 260;
+const BOARD_LIMIT_PER_ROOM = 128;
+const BOARD_DRAFT_IDLE_MS = 120_000;
+const BOARD_PREVIEW_INTERVAL_MS = 100;
 const UUID = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i;
 const textField = (value, limit) => typeof value === 'string' ? value.replace(/\s+/g, ' ').trim().slice(0, limit) : '';
 const clientsByRoom = new Map();
@@ -91,12 +97,14 @@ function flushPollEvents(client) {
 }
 
 function queuePollEvent(client, eventName, value) {
-  if (eventName === 'player-move' || eventName === 'player-presence') {
+  if (eventName === 'player-move' || eventName === 'player-presence' || eventName === 'classroom-board-state') {
     const existingIndex = client.pendingEvents.findIndex(event =>
       event.event === eventName && event.data.id === value.id
     );
-    if (existingIndex >= 0) client.pendingEvents[existingIndex] = { event: eventName, data: value };
-    else client.pendingEvents.push({ event: eventName, data: value });
+    if (existingIndex < 0) client.pendingEvents.push({ event: eventName, data: value });
+    else if (eventName !== 'classroom-board-state' || client.pendingEvents[existingIndex].data.revision <= value.revision) {
+      client.pendingEvents[existingIndex] = { event: eventName, data: value };
+    }
   } else {
     client.pendingEvents.push({ event: eventName, data: value });
   }
@@ -145,7 +153,108 @@ function removeClient(client) {
     client.pollResponse = null;
     sendJson(response, 410, { error: 'Phòng đã ngắt.' });
   }
+  releaseBoardEdit(client);
   if (client.joined) broadcast(client.room, 'player-left', { id: client.id });
+}
+
+function boardState(id, board) {
+  return { id, revision: board.revision, ...(board.draft ?? board.saved) };
+}
+
+function boardSnapshot(room) {
+  const boards = classroomBoards.get(room);
+  if (!boards) return { classroomBoard: '', classroomBoards: [] };
+  return {
+    classroomBoard: boards.get(PRACTICE_BOARD)?.saved.text ?? '',
+    classroomBoards: [...boards].filter(([, board]) => board.revision > 0).map(([id, board]) => boardState(id, board))
+  };
+}
+
+function updateBoard(room, id, board) {
+  board.revision++;
+  const state = boardState(id, board);
+  broadcast(room, 'classroom-board-state', state);
+  return state;
+}
+
+function releaseBoardEdit(client) {
+  const edit = client.classroomEdit;
+  if (!edit) return;
+  client.classroomEdit = null;
+  const boards = classroomBoards.get(client.room);
+  const board = boards.get(edit.id);
+  board.writer = null;
+  if (board.draft) {
+    board.draft = null;
+    return updateBoard(client.room, edit.id, board);
+  }
+  if (!board.revision) boards.delete(edit.id);
+  if (!boards.size) classroomBoards.delete(client.room);
+  return boardState(edit.id, board);
+}
+
+function handleBoardWrite(client, body, response) {
+  const legacy = body.boardId === undefined && body.action === undefined;
+  const id = legacy ? PRACTICE_BOARD : body.boardId;
+  const action = legacy ? 'save' : body.action;
+  if (typeof id !== 'string' || id.length > 100 || (id !== PRACTICE_BOARD && !/^[a-z0-9]+(?:-[a-z0-9]+)*-p\d{3}$/.test(id))
+      || !['edit', 'preview', 'save', 'cancel'].includes(action)) {
+    return sendJson(response, 400, { error: 'Bảng hoặc thao tác chưa hợp lệ.' });
+  }
+  const now = Date.now();
+  let boards = classroomBoards.get(client.room);
+  let board = boards?.get(id);
+  const edit = client.classroomEdit;
+  if (action === 'cancel' && (edit?.id !== id || edit.token !== body.token)) {
+    return sendJson(response, 200, { board: board ? boardState(id, board) : null });
+  }
+  if (action === 'cancel') return sendJson(response, 200, { board: releaseBoardEdit(client) });
+  if (id === PRACTICE_BOARD && (Math.abs(client.position.y - 30) > 4 || Math.abs(client.position.x + 11.54) > 6 || Math.abs(client.position.z + 77) > 7)) {
+    return sendJson(response, 403, { error: 'Hãy vào lớp để viết bảng.' });
+  }
+  if ((board?.writer && (legacy || board.writer !== client.id)) || (action === 'edit' && edit && edit.id !== id)) {
+    return sendJson(response, 409, { error: 'Đang có người viết bảng. Hãy thử lại khi lượt viết kết thúc.' });
+  }
+  if (!legacy && action !== 'edit' && (edit?.id !== id || edit.token !== body.token)) {
+    return sendJson(response, 409, { error: 'Lượt viết đã hết. Hãy mở lại bảng để tiếp tục.' });
+  }
+  if (action !== 'edit' && typeof body.text !== 'string') {
+    return sendJson(response, 400, { error: 'Nội dung bảng không hợp lệ.' });
+  }
+  if (action === 'preview' && now - (client.lastBoardPreview || 0) < BOARD_PREVIEW_INTERVAL_MS) {
+    return sendJson(response, 429, { error: 'Hãy đợi một chút rồi thử lại.' });
+  }
+  if (legacy && now - (client.lastLegacyBoardWrite || 0) < 1200) {
+    return sendJson(response, 429, { error: 'Hãy đợi một chút rồi thử lại.' });
+  }
+  if (!board) {
+    if (boards?.size >= BOARD_LIMIT_PER_ROOM) return sendJson(response, 429, { error: 'Phòng đã dùng hết số bảng được hỗ trợ.' });
+    if (!boards) classroomBoards.set(client.room, boards = new Map());
+    board = { saved: { text: '', color: '#fff5dc' }, draft: null, revision: 0, writer: null };
+    boards.set(id, board);
+  }
+  if (action === 'edit') {
+    client.classroomEdit ??= { id, token: randomUUID(), touched: now };
+    client.classroomEdit.touched = now;
+    board.writer = client.id;
+    return sendJson(response, 200, { token: client.classroomEdit.token, board: boardState(id, board) });
+  }
+  const text = legacy ? textField(body.text, 120) : body.text.replace(/\r\n?/g, '\n').replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, '').slice(0, BOARD_TEXT_LIMIT);
+  const color = CHALK_COLORS.has(body.color) ? body.color : '#fff5dc';
+  const current = board.draft ?? board.saved;
+  const changed = current.text !== text || current.color !== color;
+  if (action === 'preview') {
+    client.lastBoardPreview = now;
+    edit.touched = now;
+    if (changed) board.draft = { text, color };
+  } else {
+    board.saved = { text, color };
+    board.draft = board.writer = null;
+    if (!legacy) client.classroomEdit = null;
+    else client.lastLegacyBoardWrite = now;
+    if (id === PRACTICE_BOARD) broadcast(client.room, 'classroom-board', { text });
+  }
+  return sendJson(response, 200, { text, board: changed ? updateBoard(client.room, id, board) : boardState(id, board) });
 }
 
 function rememberChatMessage(message) {
@@ -271,7 +380,7 @@ async function handleApi(request, response, url) {
       players,
       messages: (recentMessagesByRoom.get(room) || []).slice(-30),
       serverTime: Date.now(),
-      classroomBoard: classroomBoards.get(room) || '',
+      ...boardSnapshot(room),
       musicStartedAt: SERVER_STARTED_AT
     });
     return;
@@ -305,7 +414,7 @@ async function handleApi(request, response, url) {
       players,
       messages: (recentMessagesByRoom.get(room) || []).slice(-30),
       serverTime: Date.now(),
-      classroomBoard: classroomBoards.get(room) || '',
+      ...boardSnapshot(room),
       musicStartedAt: SERVER_STARTED_AT
     });
     response.on('close', () => removeClient(client));
@@ -345,25 +454,18 @@ async function handleApi(request, response, url) {
     sendJson(response, 200, { ok: true }); return;
   }
 
-  if (url.pathname === '/api/classroom/board' || url.pathname === '/api/guestbook' || url.pathname === '/api/guestbook/heart') {
+  if (url.pathname === '/api/classroom/board') {
+    const client = getClient(body);
+    if (!client?.joined) return sendJson(response, 403, { error: 'Hãy vào trường trước.' });
+    return handleBoardWrite(client, body, response);
+  }
+
+  if (url.pathname === '/api/guestbook' || url.pathname === '/api/guestbook/heart') {
     const client = body && getClient(body);
     if (!client?.joined) { sendJson(response, 403, { error: 'Hãy vào trường trước.' }); return; }
     const now = Date.now();
     if (now - (client.lastCampusWrite || 0) < 1200) {
       sendJson(response, 429, { error: 'Hãy đợi một chút rồi thử lại.' });
-      return;
-    }
-    if (url.pathname === '/api/classroom/board') {
-      if (Math.abs(client.position.y - 30) > 4 || Math.abs(client.position.x + 11.54) > 6 || Math.abs(client.position.z + 77) > 7) {
-        sendJson(response, 403, { error: 'Hãy vào lớp để viết bảng.' });
-        return;
-      }
-      if (typeof body.text !== 'string') { sendJson(response, 400, { error: 'Nội dung bảng không hợp lệ.' }); return; }
-      const text = textField(body.text, 120);
-      client.lastCampusWrite = now;
-      classroomBoards.set(client.room, text);
-      broadcast(client.room, 'classroom-board', { text });
-      sendJson(response, 200, { text });
       return;
     }
     const note = { name: textField(body.name, 48), classYear: textField(body.classYear, 48), message: textField(body.message, 280) };
@@ -573,6 +675,7 @@ const server = http.createServer(async (request, response) => {
 const heartbeat = setInterval(() => {
   const now = Date.now();
   for (const client of clients.values()) {
+    if (client.classroomEdit && now - client.classroomEdit.touched > BOARD_DRAFT_IDLE_MS) releaseBoardEdit(client);
     if (now - client.lastSeen > CLIENT_TIMEOUT_MS) {
       removeClient(client);
       if (client.response && !client.response.writableEnded) client.response.end();

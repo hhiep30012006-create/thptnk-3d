@@ -42,8 +42,9 @@ Máy chủ hiện hỗ trợ các thiết bị cùng mạng Wi-Fi. Hosting tĩnh
 ## Tương tác và lưu bút
 
 - Áp sát lư hương rồi nhấn **F** hoặc chọn **Dâng hoa**. Nhấn **E** hoặc bấm ghế để ngồi nghỉ.
-- Cửa các lớp tự mở khi lại gần và khép lại khi rời đi. Đến ghế hoặc nhìn về phía bảng đen rồi nhấn **E** hoặc chạm nút tương tác. Đứng dậy bằng **E**, **Space** hoặc nút **Đứng dậy**. Nội dung mỗi bảng đen được giữ riêng trong phiên tham quan.
-- Ở cửa P101 dãy C1, nút **Vào phòng thực hành C1** mở phòng có công tắc, quạt và bảng xanh dùng chung. Chữ trên bảng xanh trong phòng thực hành được chia sẻ với người chơi cùng phòng.
+- Cửa các lớp tự mở khi lại gần và khép lại khi rời đi. Đến ghế hoặc nhìn về phía bảng đen rồi nhấn **E** hoặc chạm nút tương tác. Đứng dậy bằng **E**, **Space** hoặc nút **Đứng dậy**.
+- Người chơi cùng phòng thấy nội dung trên từng bảng ngay khi bạn gõ. Bấm **Xong** để giữ nội dung cho người vào sau. Đóng hộp thoại hoặc nhấn **Esc** để bỏ bản nháp. Mỗi bảng giữ nội dung riêng trong bộ nhớ của máy chủ cho đến khi máy chủ khởi động lại.
+- Ở cửa P101 dãy C1, nút **Vào phòng thực hành C1** mở phòng có công tắc, quạt và bảng xanh dùng chung.
 - Bấm **Bảng vàng kỷ niệm** để ký tên và thả tim. Khi chạy cục bộ, lời nhắn được lưu trong thư mục dữ liệu người dùng (trên Windows là `%LOCALAPPDATA%\thptnk-3d\guestbook.json`). Có thể đổi đường dẫn bằng `GUESTBOOK_FILE`.
 - Khi triển khai Render, chạy `npm ci` ở bước build và `npm start` ở bước start. Đặt `MONGODB_URI` trong Environment của Render để lưu lưu bút trên MongoDB Atlas. Có thể đặt `MONGODB_DATABASE` để đổi tên cơ sở dữ liệu mặc định `thptnk`. Nếu dùng ổ đĩa lưu trữ bền vững, đặt `GUESTBOOK_FILE` trỏ tới tệp trên ổ đó.
 - Hai người đứng gần nhau trong vùng cổng trường hoặc bờ hồ thì nút **Ảnh nhóm** sáng lên. Bấm nút hoặc nhấn **P** rồi tải ảnh PNG đã đóng dấu ngày.

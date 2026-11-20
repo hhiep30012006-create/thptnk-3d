@@ -2720,8 +2720,8 @@ function removeRemotePlayer(id) {
 function handleRoomEvent(type,data) {
   if(type==='player-presence'){
     presence.setStatus(data.id, data.status);
-  }else if(type==='classroom-board'){
-    activities.drawBoard(data.text || '');
+  }else if(type==='classroom-board-state'){
+    activities.classrooms.syncBoard(data);
   }else if(type==='player-joined'){
     if(addRemotePlayer(data)){
       appendRoomMessage({type:'system',text:`${data.profile?.name||'Một học sinh'} đã vào sân trường.`});
@@ -2796,7 +2796,7 @@ async function connectRoom() {
     if(!response.ok) throw new Error(data.error||`Lỗi máy chủ (${response.status})`);
     if(generation!==roomConnectionGeneration){roomPost('/api/leave',{id:data.id}).catch(()=>{});return;}
     roomId=data.id;
-    activities.drawBoard(data.classroomBoard || '');
+    activities.classrooms.restoreBoards(data.classroomBoards || []);
     if(Number.isFinite(data.serverTime)) roomServerClockOffsetMs=data.serverTime-Date.now();
     for(const remote of remotePlayers.values()){
       scene.remove(remote.root);
